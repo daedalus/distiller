@@ -8,7 +8,49 @@ usage: main.py [-h] [--model MODEL] [--db DB] [--max-depth MAX_DEPTH] [--max-tok
                [--system-prompt SYSTEM_PROMPT] [--threads THREADS] [--secrets-file SECRETS_FILE] [--api-hf-provider API_HF_PROVIDER]
                [--prompt-prefixes PROMPT_PREFIXES [PROMPT_PREFIXES ...]] [--batch-size BATCH_SIZE] [--remove-prompt] [--min-tfidf-score MIN_TFIDF_SCORE]
                prompt
-main.py: error: the following arguments are required: prompt
+
+LLM Distiller with Bloom filter and SQLite storage.
+
+positional arguments:
+  prompt                Root word or prompt to distill.
+
+options:
+  -h, --help            show this help message and exit
+  --model MODEL         Huggingface model name (default: distilgpt2).
+  --db DB               Path to SQLite database (default: words/data.db).
+  --max-depth MAX_DEPTH
+                        Max recursion depth (default: 10).
+  --max-tokens MAX_TOKENS
+                        Max tokens (default: 1024).
+  --compression-level {1,2,3,4,5,6,7,8,9}
+                        Zlib compression level (1-9, default: 6).
+  --seed SEED           Torch manual seed (optional).
+  --bloom-size BLOOM_SIZE
+                        Bloom filter size (default: 100,000,000).
+  --bloom-hash-count BLOOM_HASH_COUNT
+                        Bloom filter hash count (default: 6).
+  --max-ngrams MAX_NGRAMS
+                        Max ngrams (default: 10).
+  --no-color            Disable colored output.
+  --retrieve-to-bloom   Retrieve words from the database to the Bloom filter.
+  --use-unsloth         Use unsloth
+  --api-url API_URL     OpenAI compatible API url.
+  --api-key API_KEY     API key for auth.
+  --system-prompt SYSTEM_PROMPT
+                        System prompt
+  --threads THREADS     Number of CPU threads for PyTorch (default: auto)
+  --secrets-file SECRETS_FILE
+                        Specify the secrets json file.
+  --api-hf-provider API_HF_PROVIDER
+                        Specify the hugging face inference provider
+  --prompt-prefixes PROMPT_PREFIXES [PROMPT_PREFIXES ...]
+                        List of strings with spaces allowed
+  --batch-size BATCH_SIZE
+                        Number of prompts to process in parallel (default: 1)
+  --remove-prompt       Remove the prompt from the generation.
+  --min-tfidf-score MIN_TFIDF_SCORE
+                        Specify the min_tfidf_score.
+
 ```
 
 

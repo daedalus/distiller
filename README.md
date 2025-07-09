@@ -5,7 +5,7 @@
 With a local endpoint:
 
 ```
-!/bin/bash
+#!/bin/bash
 set -x
 
 PROMPT='make a list of the most important people in history'
@@ -27,7 +27,7 @@ python main.py "$PROMPT" \
 
 With a remote inference endpoint:
 ```
-!/bin/bash
+#!/bin/bash
 set -x
 
 PROMPT='make a list of the most important people in history'

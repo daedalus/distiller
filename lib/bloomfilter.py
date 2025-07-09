@@ -1,5 +1,4 @@
 import hashlib
-import mmh3
 from bitarray import bitarray
 
 class BloomFilter:
@@ -8,13 +7,16 @@ class BloomFilter:
         self.bit_array = bitarray(self.size + 1)
         self.bit_array.setall(0)
         self.hash_count = hash_count
+        self.slice_size = 256 // hash_count
 
     def _hashes(self, item):
         hashes = []
         prefix = hashlib.sha256(item.encode()).digest()
+        iprefix = int.from_bytes(prefix)
+
         for i in range(self.hash_count):
-            i_bytes = str(i).encode()
-            idx = mmh3.hash(prefix + i_bytes, 0, signed=False) & self.size
+            shift = (self.hash_count - 1 - i) * self.slice_size
+            idx = (iprefix >> shift) & self.size
             hashes.append(idx)
         return hashes
 

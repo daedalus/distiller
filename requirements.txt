@@ -1,8 +1,7 @@
-mmh3
-sqlite3
 colorama
 bitarray
 openai
 huggingface
 torch
 transformers
+scikit-learn

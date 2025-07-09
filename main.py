@@ -18,9 +18,10 @@ import time
 import argparse
 import openai
 import mmh3
-
+import json
 from bitarray import bitarray
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from urllib.parse import urlparse
 
 sys.setrecursionlimit(10**6)
 
@@ -160,8 +161,12 @@ class Distiller:
                 data BLOB NOT NULL UNIQUE,
                 tok INT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            );
+            """)
+        cursor = conn.cursor()
+        cursor.execute("select sum(tok) from texts;")
+        tok = cursor.fetchone()[0]
+        print(Fore.BLUE + f"[!] Total accumulated tokens in the database {tok}." + Style.RESET_ALL)
         return conn
     
     def retrieve_to_bloom(self):
@@ -247,7 +252,7 @@ class Distiller:
             n = self.max_ngrams    
         for size in range(n,0,-1):
             for i in range(n - size + 1):
-                yield "".join(words[i:i + size])
+                yield " ".join(words[i:i + size])
 
 
     def g(self, words, depth=0):
@@ -260,8 +265,7 @@ class Distiller:
           text, tok = self.generate(words) 
           td = time.time() - t0
           yield text, tok,td, 0
-          yield from self.g(text, depth = 1)
-
+          #yield from self.g(text, depth = 1)
         """
         LW = words.split('\n')
         if len(LW) > 1:
@@ -350,6 +354,8 @@ def parse_args():
     parser.add_argument("--api-key", default=None, help="API key for auth.")
     parser.add_argument("--system-prompt", default='You are a helpful AI assistant.', help="System prompt")
     parser.add_argument("--threads", type=int, default=None, help="Number of CPU threads for PyTorch (default: auto)")
+    parser.add_argument("--secrets-file", default=None, help="Specify the secrets json file.")
+
 
     if parser.parse_args().no_color:
         Fore.RESET = ""
@@ -363,6 +369,12 @@ if __name__ == '__main__':
         torch.set_num_threads(args.threads)
         print(Fore.BLUE + f"[-] Torch set to use {args.threads} CPU threads" + Style.RESET_ALL)
 
+  
+    if args.secrets_file is not None:
+        parsed_url = urlparse(args.api_url)
+        api_key = json.load(open(args.secrets_file,"r"))[parsed_url.hostname]
+    else:
+        api_key = args.api_key
 
     distiller = Distiller(
         model_name=args.model,
@@ -375,7 +387,7 @@ if __name__ == '__main__':
         retrieve_to_bloom=args.retrieve_to_bloom,
         use_unsloth = args.use_unsloth and UNSLOTH_AVAILABLE,
         api_url = args.api_url,
-        api_key = args.api_key,
+        api_key = api_key,
         max_tokens = args.max_tokens,
         system_prompt = args.system_prompt,
         max_ngrams = args.max_ngrams,

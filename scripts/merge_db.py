@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import sys
 
 def merge_sqlite_dbs(source_db1, source_db2, destination_db):
     # Copy source_db1 as the base of destination_db
@@ -42,5 +43,6 @@ def merge_sqlite_dbs(source_db1, source_db2, destination_db):
     print(f"Merge completed into: {destination_db}")
 
 # Example usage
-merge_sqlite_dbs('words/data1.db', 'words/data2.db', 'words/merged.db')
+
+merge_sqlite_dbs(sys.argv[1], sys.argv[2], sys.argv[3])
 

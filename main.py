@@ -34,7 +34,7 @@ class Distiller:
                  bloom_size=27, bloom_hash_count=6, retrieve_to_bloom=False, use_unsloth=False, 
                  max_tokens=1024, api_url=None, api_key=None, system_prompt=None, 
                  max_ngrams=10, min_ngrams=2, api_hf_provider=None, prompt_prefixes=None,
-                 batch_size=1, min_tfidf_score=0.2, tfidf_cache_dir=None, remove_prompt = False):
+                 batch_size=1, min_tfidf_score=0.2, tfidf_cache_dir=None, remove_prompt = False, compression_algo='zlib', remote_hostname='localhost'):
 
         # Initialize core parameters
         self.model_name = model_name
@@ -58,7 +58,9 @@ class Distiller:
         self.api_hf_provider = api_hf_provider
         self.prompt_prefixes = prompt_prefixes if prompt_prefixes is not None else ['']
         self.remove_prompt = remove_prompt
-      
+        self.compression_algo = compression_algo     
+        self.remote_hostname = remote_hostname
+ 
         self.corpus = []
     
         if api_url is None:
@@ -94,6 +96,8 @@ class Distiller:
             "\uFE0F"
             "]+", flags=re.UNICODE
         )
+
+        print(Fore.BLUE + f"[-] Using {self.compression_algo}  compression algorithm." + Style.RESET_ALL)
 
         if api_url is None:
             self.model, self.tokenizer, self.device = self.load_model()
@@ -147,6 +151,7 @@ class Distiller:
                 word TEXT,
                 data BLOB NOT NULL UNIQUE,
                 tok INT,
+                compression_algo TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             """)
@@ -241,7 +246,7 @@ class Distiller:
             return response.choices[0].message.content, response.usage.completion_tokens
         except Exception as e:
             self.retry_sleep *= 2
-            print(f"Error generating commit message: {e} retry in {self.retry_sleep}")
+            print(Fore.RED +  f"[!] {self.remote_hostname}: Error generating commit message: {e} retry in {self.retry_sleep}" + Style.RESET_ALL)
             time.sleep(self.retry_sleep)
             return self.llm_api_generate(prompt)
 
@@ -315,6 +320,7 @@ class Distiller:
 
 
     def distill(self, root_word):
+        print(Fore.YELLOW + f"[+] Processing prompt: {root_word}" + Style.RESET_ALL)
         t0 = time.time()
         n = 0
         try:
@@ -322,19 +328,25 @@ class Distiller:
                 for text, tok, td, depth in self.g(root_word):
                     self.TOK += tok
                     ts = tok / td if td > 0 else 0
-                    print(Fore.YELLOW + f"[+] Generation: {n}, depth: {depth}, tokens: {tok} at {round(ts, 2)} tokens/s\n" +
+                    print(Fore.YELLOW + f"[+] {self.remote_hostname}:  Generation: {n}, depth: {depth}, tokens: {tok} at {round(ts, 2)} tokens/s\n" +
                           Fore.GREEN + f"[{text}]" + Style.RESET_ALL)
-                    data = compress(text, level=self.compression_level)
+                    data = compress(text, self.compression_level, self.compression_algo)
                     self.conn.execute(
-                        "INSERT or ignore INTO texts (seed, model, word, data, tok) VALUES (?,?, ?, ?,?)",
-                        (self.seed, self.model_name, root_word, data, tok)
+                        "INSERT or ignore INTO texts (seed, model, word, data, tok, compression_algo) VALUES (?,?,?,?,?,?)",
+                        (self.seed, self.model_name, root_word, data, tok, self.compression_algo)
                     )
                     self.conn.commit()
                     lt, lc = len(text), len(data)
-                    print(Fore.BLUE + f"[+] Text size: {lt} bytes, Compressed data size: {lc} bytes, ratio: {round(lt/lc,2)}" + Style.RESET_ALL)
+                    print(Fore.BLUE + f"[+] Text size: {lt} bytes, Compressed data size ({self.compression_algo}): {lc} bytes, ratio: {round(lt/lc,2)}" + Style.RESET_ALL)
                     
                     tdt = time.time() - t0
-                    print(f"[+] Total tokens: {self.TOK}, total elapsed time: {round(tdt, 2)} seconds, total tokens/s: {round(self.TOK/tdt, 2)}")
+                    print(f"[+] Total generated tokens: {self.TOK}, total elapsed time: {round(tdt, 2)} seconds, total tokens/s: {round(self.TOK/tdt, 2)}")
+
+                    if n % 10 == 0:                  
+                        cursor = self.conn.cursor()
+                        cursor.execute("select sum(tok) from texts")
+                        tokdb = cursor.fetchone()[0]
+                        print(f"[+] Total accumulated tokens in database: {round(tokdb/1000000,2)}M.")
                     n += 1
         except Exception as e:
             print(Fore.RED + f"[!] DB error: {e}" + Style.RESET_ALL)
@@ -342,13 +354,21 @@ class Distiller:
 if __name__ == '__main__':
     args = parse_args()
 
+    hostname = 'localhost'
+    if args.api_url is not None:
+        remote_hostname = urlparse(args.api_url).hostname
+    if args.api_hf_provider:
+        remote_hostname = 'api.hugginface.co' 
+    
+
     if args.threads is not None:
         torch.set_num_threads(args.threads)
         print(Fore.BLUE + f"[-] Torch set to use {args.threads} CPU threads" + Style.RESET_ALL)
 
     if args.secrets_file is not None:
-        parsed_url = urlparse(args.api_url)
-        api_key = json.load(open(args.secrets_file,"r"))[parsed_url.hostname]
+        hostname = urlparse(args.api_url).hostname
+
+        api_key = json.load(open(args.secrets_file,"r"))[hostname]
     else:
         api_key = args.api_key
 
@@ -371,6 +391,13 @@ if __name__ == '__main__':
         prompt_prefixes=args.prompt_prefixes,
         batch_size=args.batch_size,
         remove_prompt=args.remove_prompt,
-        min_tfidf_score=args.min_tfidf_score
+        min_tfidf_score=args.min_tfidf_score,
+        compression_algo = args.compression_algo,
+        remote_hostname = remote_hostname,
     )
-    distiller.distill(args.prompt)
+    if args.load_prompts_from_file:
+
+        for prompt in open(args.load_prompts_from_file):
+            distiller.distill(prompt) 
+    if args.prompt:
+        distiller.distill(args.prompt)

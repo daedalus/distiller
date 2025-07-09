@@ -10,7 +10,7 @@ class TFIDFHelper:
         self.tfidf_vectorizer = TfidfVectorizer(ngram_range=(1, 3))
         self.tfidf_vectorizer.fit(self.corpus)
 
-        print(Fore.BLUE +  f"[!] TFIDFHelper initialized with: corpus_len: {len(corpus)} min_tfidf_score: {min_tfidf_score} min_ngrams: {min_ngrams} max_ngrams: {max_ngrams}" + Style.RESET_ALL)
+        print(Fore.BLUE +  f"[!] TFIDFHelper initialized with: corpus_len: {len(corpus)}, min_tfidf_score: {min_tfidf_score}, min_ngrams: {min_ngrams}, max_ngrams: {max_ngrams}" + Style.RESET_ALL)
 
     def get_tfidf_scores(self, text: str):
         text = text.lower().replace("\n", "")

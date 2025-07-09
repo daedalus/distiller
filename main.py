@@ -22,6 +22,7 @@ import json
 from bitarray import bitarray
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from urllib.parse import urlparse
+from huggingface_hub import InferenceClient
 
 sys.setrecursionlimit(10**6)
 
@@ -54,7 +55,7 @@ class BloomFilter:
 
 
 class Distiller:
-    def __init__(self, model_name, db_path, max_depth=10, compression_level=6, seed=None, bloom_size=27, bloom_hash_count=6, retrieve_to_bloom=False, use_unsloth=False, max_tokens=1024, api_url = None, api_key = None, system_prompt=None, max_ngrams=10):
+    def __init__(self, model_name, db_path, max_depth=10, compression_level=6, seed=None, bloom_size=27, bloom_hash_count=6, retrieve_to_bloom=False, use_unsloth=False, max_tokens=1024, api_url = None, api_key = None, system_prompt=None, max_ngrams=10, min_ngrams=0, api_hf_provider = None, prompt_prefixes=None):
         """
         Initialize the Distiller with model, database path, and other parameters.
         :param model_name: Name of the Huggingface model to use.
@@ -76,8 +77,13 @@ class Distiller:
         self.api_model = model_name
         self.retry_sleep = 1
         self.system_prompt = system_prompt
+        self.min_ngrams = min_ngrams
         self.max_ngrams = max_ngrams
 
+
+        self.api_hf_provider = api_hf_provider
+        self.prompt_prefixes = prompt_prefixes if prompt_prefixes is not None else ['']
+         
         if api_url is None:
             if seed is not None:
                 torch.manual_seed(seed)
@@ -86,8 +92,11 @@ class Distiller:
                     torch.cuda.manual_seed_all(seed)
                 print(Fore.BLUE + f"[-] Torch seed set to {seed}" + Style.RESET_ALL)
         else:
-            self.api_client = openai.OpenAI(base_url=self.api_url, api_key=self.api_key)
-            print(Fore.BLUE +   f"[-] Using remote API: {api_url}" + Style.RESET_ALL)
+            if api_hf_provider is None:
+                self.api_client = openai.OpenAI(base_url=self.api_url, api_key=self.api_key)
+                print(Fore.BLUE +   f"[-] Using OpenAI remote API: {api_url}" + Style.RESET_ALL)
+            else:
+                self.api_client = InferenceClient(provider=self.api_hf_provider,api_key=self.api_key,)
 
 
         self.emoji_pattern = re.compile(
@@ -219,10 +228,11 @@ class Distiller:
         """Generates a commit message using OpenAI's GPT."""
         try:
             response = self.api_client.chat.completions.create(
-            #response = self.api_client.completions.create(
                 model=self.api_model,
-                messages=[{"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
                 max_tokens=self.max_tokens,
             )
             self.retry_sleep = 1
@@ -245,69 +255,48 @@ class Distiller:
 
     def all_ngrams(self,text):
         text = text.replace("\n", "")
-        words = text.split()
-        if self.max_ngrams == -1:
-            n = len(words)
-        else:
-            n = self.max_ngrams    
-        for size in range(n,0,-1):
+        words = text.split() 
+        n = min(self.max_ngrams,len(words))  
+        for size in range(n,self.min_ngrams,-1):
             for i in range(n - size + 1):
                 yield " ".join(words[i:i + size])
-
-
-    def g(self, words, depth=0):
-        if depth > self.max_depth:
-            return
-
-        t0 = time.time()
+   
+    def g(self, root_prompt):
+        # Initialize stack with root prompt at depth 0
+        stack = [(root_prompt, 0)]
+    
+        while stack:
+            prompt, depth = stack.pop()
         
-        if depth == 0:
-          text, tok = self.generate(words) 
-          td = time.time() - t0
-          yield text, tok,td, 0
-          #yield from self.g(text, depth = 1)
-        """
-        LW = words.split('\n')
-        if len(LW) > 1:
-            for word in LW:
-                try:
-                    clean_word = self.sanitize(word)
-                    text, tok = self.generate(clean_word)
-                    clean_text = self.sanitize(text)
-                    if clean_text not in self.bloom:
-                        self.bloom.add(clean_text)
-                        td = time.time() - t0
-                        yield clean_text, tok, td, depth
-                        yield from self.g(clean_text, depth=depth + 1)
-                except Exception as e:
-                    print(Fore.RED + f"[!] Generation error: {e}" + Style.RESET_ALL)
- 
-        for word in words.split():
-            try:
-                clean_word = self.sanitize(word)
-                text, tok = self.generate(clean_word)
-                clean_text = self.sanitize(text)
-                if clean_text not in self.bloom:
-                    self.bloom.add(clean_text)
-                    td = time.time() - t0
-                    yield clean_text, tok, td, depth
-                yield from self.g(clean_text, depth=depth + 1)
-            except Exception as e:
-                print(Fore.RED + f"[!] Generation error: {e}" + Style.RESET_ALL)
-        """
-        for ngram in self.all_ngrams(words):
-            try:
-                #clean_word = self.sanitize(ngram)
-                text, tok = self.generate(ngram)
-                clean_text = self.sanitize(text)
-                if clean_text not in self.bloom:
-                    self.bloom.add(clean_text)
-                    td = time.time() - t0
-                    yield clean_text, tok, td, depth
-                yield from self.g(clean_text, depth=depth + 1)
-            except Exception as e:
-                print(Fore.RED + f"[!] Generation error: {e}" + Style.RESET_ALL)
+            # Skip if depth exceeds maximum allowed
+            if depth > self.max_depth:
+                continue
 
+            # Generate text from the current prompt
+            t0 = time.time()
+            text, tok = self.generate(prompt)
+            clean_text = self.sanitize(text)
+            td = time.time() - t0
+            yield clean_text, tok, td, depth
+ 
+            # Collect new prompts from ngrams
+            new_prompts = []
+            for ngram in self.all_ngrams(clean_text):
+                for prefix in self.prompt_prefixes:
+                    # Format new prompt based on prefix presence
+                    new_prompt = f"{prefix} {ngram}" if prefix else ngram
+                
+                    # Skip if prompt is already in Bloom filter
+                    if new_prompt in self.bloom:
+                        continue
+                    
+                    # Add to Bloom filter and queue for processing
+                    self.bloom.add(new_prompt)
+                    if depth + 1 < self.max_depth:
+                        new_prompts.append((new_prompt, depth + 1))
+        
+            # Add new prompts to stack in reverse order for DFS-like processing
+            stack.extend(reversed(new_prompts))
 
     def distill(self, root_word):
         t0 = time.time()
@@ -321,7 +310,7 @@ class Distiller:
                           Fore.GREEN + f"[{text}]" + Style.RESET_ALL)
                     data = zlib.compress(text.encode("utf8"), level=self.compression_level)
                     self.conn.execute(
-                        "INSERT INTO texts (seed, model, word, data, tok) VALUES (?,?, ?, ?,?)",
+                        "INSERT or ignore INTO texts (seed, model, word, data, tok) VALUES (?,?, ?, ?,?)",
                         (self.seed, self.model_name, root_word, data, tok)
                     )
                     self.conn.commit()
@@ -355,7 +344,10 @@ def parse_args():
     parser.add_argument("--system-prompt", default='You are a helpful AI assistant.', help="System prompt")
     parser.add_argument("--threads", type=int, default=None, help="Number of CPU threads for PyTorch (default: auto)")
     parser.add_argument("--secrets-file", default=None, help="Specify the secrets json file.")
+    parser.add_argument("--api-hf-provider", default=None, help="Specify the hugging face inference provider")    
+    parser.add_argument('--prompt-prefixes', nargs='+', help='List of strings with spaces allowed')
 
+    args = parser.parse_args()
 
     if parser.parse_args().no_color:
         Fore.RESET = ""
@@ -391,6 +383,8 @@ if __name__ == '__main__':
         max_tokens = args.max_tokens,
         system_prompt = args.system_prompt,
         max_ngrams = args.max_ngrams,
+        api_hf_provider = args.api_hf_provider,
+        prompt_prefixes = args.prompt_prefixes,
     )
     distiller.distill(args.prompt)
 

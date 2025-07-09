@@ -1,3 +1,13 @@
+from colorama import Fore, Style
+try:
+  import unsloth
+  from unsloth import FastLanguageModel
+  UNSLOTH_AVAILABLE = True
+  print(Fore.BLUE + "[-] Unsloth available" + Style.RESET_ALL)
+except:
+  UNSLOTH_AVAILABLE = False
+  print(Fore.RED + "[!] Unsloth unavailable"+ Style.RESET_ALL)
+import os
 import re
 import zlib
 import sys
@@ -6,7 +16,7 @@ import sqlite3
 import torch
 import time
 import argparse
-from colorama import Fore, Style
+
 from bitarray import bitarray
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -40,7 +50,7 @@ class BloomFilter:
 
 
 class Distiller:
-    def __init__(self, model_name, db_path, max_depth=10, compression_level=6, seed=None, bloom_size=27, bloom_hash_count=6, retrieve_to_bloom=False):
+    def __init__(self, model_name, db_path, max_depth=10, compression_level=6, seed=None, bloom_size=27, bloom_hash_count=6, retrieve_to_bloom=False, use_unsloth=False):
         """
         Initialize the Distiller with model, database path, and other parameters.
         :param model_name: Name of the Huggingface model to use.
@@ -54,13 +64,17 @@ class Distiller:
         self.compression_level = compression_level
         self.bloom = BloomFilter(power2=bloom_size, hash_count=bloom_hash_count)
         self.TOK = 0
+        self.seed = seed
+        self.use_unsloth = use_unsloth
+
+
 
         if seed is not None:
             torch.manual_seed(seed)
             if torch.cuda.is_available():
                 print(Fore.BLUE + f"[!] Cuda is available." + Style.RESET_ALL)
                 torch.cuda.manual_seed_all(seed)
-            print(Fore.BLUE + f"[!] Torch seed set to {seed}" + Style.RESET_ALL)
+            print(Fore.BLUE + f"[-] Torch seed set to {seed}" + Style.RESET_ALL)
 
         self.emoji_pattern = re.compile(
             "["
@@ -89,15 +103,25 @@ class Distiller:
             self.retrieve_to_bloom()
 
     def load_model(self):
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        model = AutoModelForCausalLM.from_pretrained(
-            self.model_name,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32
-        )
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = model.to(device)
-        if tokenizer.pad_token_id is None:
-            tokenizer.pad_token = tokenizer.eos_token
+        if self.use_unsloth:
+            device = 'cuda'
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name = self.model_name,
+                dtype = None,
+                load_in_4bit = True,
+            )
+            #max_seq_length = 32768,
+            FastLanguageModel.for_inference(model)
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32
+            )
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            model = model.to(device)
+            if tokenizer.pad_token_id is None:
+                tokenizer.pad_token = tokenizer.eos_token
         print(Fore.BLUE + f"[!] Using model: {self.model_name} on device: {device}, with database: {self.db_path}." + Style.RESET_ALL)
         return model, tokenizer, device
 
@@ -110,10 +134,13 @@ class Distiller:
         return bad_token_ids
 
     def init_db(self):
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS texts (
                 id INTEGER PRIMARY KEY,
+                seed INT,
+                model TEXT,
                 word TEXT,
                 data BLOB NOT NULL UNIQUE,
                 tok INT,
@@ -186,8 +213,8 @@ class Distiller:
                           Fore.GREEN + f"[{text}]" + Style.RESET_ALL)
                     data = zlib.compress(text.encode("utf8"), level=self.compression_level)
                     self.conn.execute(
-                        "INSERT INTO texts (word, data, tok) VALUES (?, ?, ?)",
-                        (root_word, data, tok)
+                        "INSERT INTO texts (seed, model, word, data, tok) VALUES (?,?, ?, ?,?)",
+                        (self.seed, self.model_name, root_word, data, tok)
                     )
                     self.conn.commit()
                     lt, lc = len(text), len(data)
@@ -209,10 +236,12 @@ def parse_args():
     parser.add_argument("--compression-level", type=int, choices=range(1, 10), default=6, help="Zlib compression level (1-9, default: 6).")
     parser.add_argument("--seed", type=int, help="Torch manual seed (optional).")
 
-    parser.add_argument("--bloom-size", type=int, default=27, help="Bloom filter size (default: 100,000,000).")
+    parser.add_argument("--bloom-size", type=int, default=26, help="Bloom filter size (default: 100,000,000).")
     parser.add_argument("--bloom-hash-count", type=int, default=6, help="Bloom filter hash count (default: 6).")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output.")
     parser.add_argument("--retrieve-to-bloom", action="store_true", help="Retrieve words from the database to the Bloom filter.")
+    parser.add_argument("--use-unsloth", action="store_true", help="Use unsloth")
+    parser.add_argument("--threads", type=int, default=None, help="Number of CPU threads for PyTorch (default: auto)")
 
 
     if parser.parse_args().no_color:
@@ -222,6 +251,12 @@ def parse_args():
 
 if __name__ == '__main__':
     args = parse_args()
+
+    if args.threads is not None:
+        torch.set_num_threads(args.threads)
+        print(Fore.BLUE + f"[-] Torch set to use {args.threads} CPU threads" + Style.RESET_ALL)
+
+
     distiller = Distiller(
         model_name=args.model,
         db_path=args.db,
@@ -230,7 +265,8 @@ if __name__ == '__main__':
         seed=args.seed,
         bloom_size=args.bloom_size, 
         bloom_hash_count=args.bloom_hash_count,
-        retrieve_to_bloom=args.retrieve_to_bloom
+        retrieve_to_bloom=args.retrieve_to_bloom,
+        use_unsloth = args.use_unsloth and UNSLOTH_AVAILABLE
     )
     distiller.distill(args.prompt)
 

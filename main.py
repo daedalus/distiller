@@ -29,13 +29,14 @@ from lib.utils import sanitize, compress, parse_args
 from sklearn.feature_extraction.text import TfidfVectorizer
 from typing import List, Tuple, Generator, Dict
 from joblib import Memory
+from TFIDFHelper import TFIDFHelper
 
 class Distiller:
     def __init__(self, model_name, db_path, max_depth=10, compression_level=6, seed=None, 
                  bloom_size=27, bloom_hash_count=6, retrieve_to_bloom=False, use_unsloth=False, 
                  max_tokens=1024, api_url=None, api_key=None, system_prompt=None, 
-                 max_ngrams=10, min_ngrams=0, api_hf_provider=None, prompt_prefixes=None,
-                 batch_size=1, min_tfidf_score=0.2, max_ngram_length=4, tfidf_cache_dir=None):
+                 max_ngrams=10, min_ngrams=2, api_hf_provider=None, prompt_prefixes=None,
+                 batch_size=1, min_tfidf_score=0.2, tfidf_cache_dir=None, remove_prompt = False):
 
         # Initialize core parameters
         self.model_name = model_name
@@ -56,20 +57,14 @@ class Distiller:
         self.max_ngrams = max_ngrams
         self.batch_size = batch_size
         self.min_tfidf_score = min_tfidf_score
-        self.max_ngram_length = max_ngram_length
         self.api_hf_provider = api_hf_provider
         self.prompt_prefixes = prompt_prefixes if prompt_prefixes is not None else ['']
-         
+        self.remove_prompt = remove_prompt
+      
         # Initialize TF-IDF components
-        self.tfidf_memory = Memory(tfidf_cache_dir, verbose=0) if tfidf_cache_dir else None
-        self.tfidf_vectorizer = TfidfVectorizer(
-            ngram_range=(1, max_ngram_length),
-            stop_words='english'
-        )
-        if self.tfidf_memory:
-            self.tfidf_vectorizer = self.tfidf_memory.cache(self.tfidf_vectorizer)
-        self.corpus = []
-
+        self.tfidf_helper = TFIDFHelper(corpus=[], min_tfidf_score=min_tfidf_score, min_ngrams, max_ngrams)
+         
+    
         if api_url is None:
             if seed is not None:
                 torch.manual_seed(seed)
@@ -278,42 +273,6 @@ class Distiller:
             return self.llm_api_generate_batch(prompts)
 
 
-    def get_tfidf_scores(self, text: str) -> Dict[str, float]:
-        """Calculate TF-IDF scores for all n-grams in text"""
-        self.corpus.append(text)
-        try:
-            tfidf_matrix = self.tfidf_vectorizer.fit_transform(self.corpus)
-            feature_names = self.tfidf_vectorizer.get_feature_names_out()
-            scores = zip(feature_names, tfidf_matrix[-1].toarray().flatten())
-            return {ngram: score for ngram, score in scores if score > self.min_tfidf_score}
-        except ValueError:
-            return {}
-
-
-    def all_ngrams(self, text: str) -> Generator[str, None, None]:
-        """Yield n-grams in order of their TF-IDF importance"""
-        text = text.replace("\n", "")
-        tfidf_scores = self.get_tfidf_scores(text)
-        
-        # Get all possible ngrams
-        words = text.split()
-        all_ngrams = set()
-        for n in range(min(self.max_ngrams, len(words)), self.min_ngrams, -1):
-            for i in range(len(words) - n + 1):
-                ngram = " ".join(words[i:i+n])
-                all_ngrams.add(ngram)
-        
-        # Score and filter ngrams
-        scored_ngrams = [(ngram, tfidf_scores.get(ngram, 0)) 
-                        for ngram in all_ngrams]
-        scored_ngrams.sort(key=lambda x: x[1], reverse=True)
-        
-        # Yield ngrams above threshold first, then others if needed
-        for ngram, score in scored_ngrams:
-            if score >= self.min_tfidf_score or len(scored_ngrams) < 5:  # Keep at least 5 ngrams
-                yield ngram
-   
-
     def g(self, root_prompt) -> Generator[Tuple[str, int, float, int], None, None]:
         stack = [(root_prompt, 0)]
     
@@ -333,13 +292,14 @@ class Distiller:
             texts, toks = self.generate_batch(prompts)
             td = time.time() - t0
             
-            for text, tok, depth in zip(texts, toks, depths):
+            for i,(text, tok, depth) in enumerate(zip(texts, toks, depths)):
                 clean_text = sanitize(text)
-                #clean_text = clean_text.replace(prompt, '')
+                if self.remove_prompt:
+                    clean_text = clean_text.replace(prompts[i], '')
                 yield clean_text, tok, td, depth
                 
                 new_prompts = []
-                for ngram in all_ngrams(clean_text):
+                for ngram in self.tfidf_helper.all_ngrams(clean_text):
                     for prefix in self.prompt_prefixes:
                         new_prompt = f"{prefix} {ngram}" if prefix else ngram
                     
@@ -409,5 +369,7 @@ if __name__ == '__main__':
         api_hf_provider=args.api_hf_provider,
         prompt_prefixes=args.prompt_prefixes,
         batch_size=args.batch_size,
+        remove_prompt=args.remove_prompt,
+        min_tfidf_score=args.min_tfidf_score
     )
     distiller.distill(args.prompt)

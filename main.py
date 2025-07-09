@@ -11,25 +11,23 @@ import os
 import re
 import zlib
 import sys
-import hashlib
 import sqlite3
 import torch
 import time
 import argparse
 import openai
-import mmh3
 import json
 from typing import List, Tuple, Generator
-from bitarray import bitarray
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from urllib.parse import urlparse
 from huggingface_hub import InferenceClient
-from lib.bloomfilter import BloomFilter
-from lib.utils import sanitize, compress, parse_args
 from sklearn.feature_extraction.text import TfidfVectorizer
 from typing import List, Tuple, Generator, Dict
 from joblib import Memory
-from TFIDFHelper import TFIDFHelper
+from lib.bloomfilter import BloomFilter
+from lib.utils import sanitize, compress, parse_args
+from lib.TFIDFHelper import TFIDFHelper
+
 
 class Distiller:
     def __init__(self, model_name, db_path, max_depth=10, compression_level=6, seed=None, 
@@ -61,9 +59,7 @@ class Distiller:
         self.prompt_prefixes = prompt_prefixes if prompt_prefixes is not None else ['']
         self.remove_prompt = remove_prompt
       
-        # Initialize TF-IDF components
-        self.tfidf_helper = TFIDFHelper(corpus=[], min_tfidf_score=min_tfidf_score, min_ngrams, max_ngrams)
-         
+        self.corpus = []
     
         if api_url is None:
             if seed is not None:
@@ -296,6 +292,11 @@ class Distiller:
                 clean_text = sanitize(text)
                 if self.remove_prompt:
                     clean_text = clean_text.replace(prompts[i], '')
+
+                # Initialize TF-IDF components
+                self.corpus.append(clean_text)
+                self.tfidf_helper = TFIDFHelper(corpus = self.corpus, min_tfidf_score = self.min_tfidf_score, min_ngrams = self.min_ngrams, max_ngrams = self.max_ngrams)
+         
                 yield clean_text, tok, td, depth
                 
                 new_prompts = []

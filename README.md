@@ -2,6 +2,16 @@
 
 ### Running ###
 
+```
+usage: main.py [-h] [--model MODEL] [--db DB] [--max-depth MAX_DEPTH] [--max-tokens MAX_TOKENS] [--compression-level {1,2,3,4,5,6,7,8,9}] [--seed SEED] [--bloom-size BLOOM_SIZE]
+               [--bloom-hash-count BLOOM_HASH_COUNT] [--max-ngrams MAX_NGRAMS] [--no-color] [--retrieve-to-bloom] [--use-unsloth] [--api-url API_URL] [--api-key API_KEY]
+               [--system-prompt SYSTEM_PROMPT] [--threads THREADS] [--secrets-file SECRETS_FILE] [--api-hf-provider API_HF_PROVIDER]
+               [--prompt-prefixes PROMPT_PREFIXES [PROMPT_PREFIXES ...]] [--batch-size BATCH_SIZE] [--remove-prompt] [--min-tfidf-score MIN_TFIDF_SCORE]
+               prompt
+main.py: error: the following arguments are required: prompt
+```
+
+
 With a local endpoint:
 
 ```

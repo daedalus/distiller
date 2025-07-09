@@ -1,12 +1,12 @@
 from colorama import Fore, Style
 try:
-  import unsloth
-  from unsloth import FastLanguageModel
-  UNSLOTH_AVAILABLE = True
-  print(Fore.BLUE + "[-] Unsloth available" + Style.RESET_ALL)
+    import unsloth
+    from unsloth import FastLanguageModel
+    UNSLOTH_AVAILABLE = True
+    print(Fore.BLUE + "[-] Unsloth available" + Style.RESET_ALL)
 except:
-  UNSLOTH_AVAILABLE = False
-  print(Fore.RED + "[!] Unsloth unavailable"+ Style.RESET_ALL)
+    UNSLOTH_AVAILABLE = False
+    print(Fore.RED + "[!] Unsloth unavailable"+ Style.RESET_ALL)
 import os
 import re
 import zlib
@@ -19,6 +19,7 @@ import argparse
 import openai
 import mmh3
 import json
+from typing import List, Tuple, Generator
 from bitarray import bitarray
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from urllib.parse import urlparse
@@ -26,12 +27,10 @@ from huggingface_hub import InferenceClient
 
 sys.setrecursionlimit(10**6)
 
-
 class BloomFilter:
     def __init__(self, power2=27, hash_count=8):
-        # size = 2^power bits
-        self.size = (1 << power2) - 1  # bitmask for indexing
-        self.bit_array = bitarray(self.size + 1)  # allocate full array size
+        self.size = (1 << power2) - 1
+        self.bit_array = bitarray(self.size + 1)
         self.bit_array.setall(0)
         self.hash_count = hash_count
 
@@ -40,9 +39,7 @@ class BloomFilter:
         prefix = hashlib.sha256(item.encode()).digest()
         for i in range(self.hash_count):
             i_bytes = str(i).encode()
-            #h_bytes = hashlib.sha256(prefix + i_bytes).digest()
             idx = mmh3.hash(prefix + i_bytes, 0, signed=False) & self.size
-            #idx = int.from_bytes(h_bytes, 'big') & self.size  # bitmask instead of modulo
             hashes.append(idx)
         return hashes
 
@@ -53,16 +50,12 @@ class BloomFilter:
     def __contains__(self, item):
         return all(self.bit_array[idx] for idx in self._hashes(item))
 
-
 class Distiller:
-    def __init__(self, model_name, db_path, max_depth=10, compression_level=6, seed=None, bloom_size=27, bloom_hash_count=6, retrieve_to_bloom=False, use_unsloth=False, max_tokens=1024, api_url = None, api_key = None, system_prompt=None, max_ngrams=10, min_ngrams=0, api_hf_provider = None, prompt_prefixes=None):
-        """
-        Initialize the Distiller with model, database path, and other parameters.
-        :param model_name: Name of the Huggingface model to use.
-        :param db_path: Path to the SQLite database.
-        :param max_depth: Maximum recursion depth for text generation.
-        :param compression_level: Zlib compression level (1-9). 
-        """
+    def __init__(self, model_name, db_path, max_depth=10, compression_level=6, seed=None, 
+                 bloom_size=27, bloom_hash_count=6, retrieve_to_bloom=False, use_unsloth=False, 
+                 max_tokens=1024, api_url=None, api_key=None, system_prompt=None, 
+                 max_ngrams=10, min_ngrams=0, api_hf_provider=None, prompt_prefixes=None,
+                 batch_size=1):
         self.model_name = model_name
         self.db_path = db_path
         self.max_depth = max_depth
@@ -79,8 +72,7 @@ class Distiller:
         self.system_prompt = system_prompt
         self.min_ngrams = min_ngrams
         self.max_ngrams = max_ngrams
-
-
+        self.batch_size = batch_size
         self.api_hf_provider = api_hf_provider
         self.prompt_prefixes = prompt_prefixes if prompt_prefixes is not None else ['']
          
@@ -94,10 +86,9 @@ class Distiller:
         else:
             if api_hf_provider is None:
                 self.api_client = openai.OpenAI(base_url=self.api_url, api_key=self.api_key)
-                print(Fore.BLUE +   f"[-] Using OpenAI remote API: {api_url}" + Style.RESET_ALL)
+                print(Fore.BLUE + f"[-] Using OpenAI remote API: {api_url}" + Style.RESET_ALL)
             else:
-                self.api_client = InferenceClient(provider=self.api_hf_provider,api_key=self.api_key,)
-
+                self.api_client = InferenceClient(provider=self.api_hf_provider, api_key=self.api_key)
 
         self.emoji_pattern = re.compile(
             "["
@@ -124,18 +115,17 @@ class Distiller:
             self.bad_token_ids = self.build_bad_token_ids()
 
         self.conn = self.init_db()
-        if self.retrieve_to_bloom:
+        if retrieve_to_bloom:
             self.retrieve_to_bloom()
 
     def load_model(self):
         if self.use_unsloth:
             device = 'cuda'
             model, tokenizer = FastLanguageModel.from_pretrained(
-                model_name = self.model_name,
-                dtype = None,
-                load_in_4bit = True,
+                model_name=self.model_name,
+                dtype=None,
+                load_in_4bit=True,
             )
-            #max_seq_length = 32768,
             FastLanguageModel.for_inference(model)
         else:
             tokenizer = AutoTokenizer.from_pretrained(self.model_name)
@@ -179,9 +169,6 @@ class Distiller:
         return conn
     
     def retrieve_to_bloom(self):
-        """
-        Retrieve words from the database and add them to the Bloom filter.
-        """
         try:
             cursor = self.conn.cursor()
             cursor.execute("SELECT data FROM texts")
@@ -212,6 +199,33 @@ class Distiller:
         tokens = outputs.shape[1]
         return generated_text, tokens
 
+    def llm_local_generate_batch(self, prompts: List[str]) -> Tuple[List[str], List[int]]:
+        try:
+            inputs = self.tokenizer(
+                prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=self.max_tokens,
+            ).to(self.device)
+            
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=self.max_tokens,
+                do_sample=True,
+                top_k=50,
+                pad_token_id=self.tokenizer.eos_token_id,
+                bad_words_ids=self.bad_token_ids
+            )
+            return [
+                self.tokenizer.decode(output, skip_special_tokens=True)
+                for output in outputs
+            ], [len(output) for output in outputs]
+        except torch.cuda.OutOfMemoryError:
+            self.batch_size = max(1, self.batch_size // 2)
+            print(Fore.YELLOW + f"[!] Reduced batch size to {self.batch_size} due to OOM" + Style.RESET_ALL)
+            return self.llm_local_generate_batch(prompts)
+
     def sleep_unlock(self):
         if self.retry_sleep > 0:
             print(Fore.BLUE + f"[-] Going to sleep for {self.retry_sleep} seconds to avoid overwelming the servers." + Style.RESET_ALL)
@@ -225,7 +239,6 @@ class Distiller:
             self.retty_sleep *= 2
 
     def llm_api_generate(self, prompt):
-        """Generates a commit message using OpenAI's GPT."""
         try:
             response = self.api_client.chat.completions.create(
                 model=self.api_model,
@@ -237,15 +250,19 @@ class Distiller:
             )
             self.retry_sleep = 1
             return response.choices[0].message.content, response.usage.completion_tokens
-
         except Exception as e:
             self.retry_sleep *= 2
             print(f"Error generating commit message: {e} retry in {self.retry_sleep}")
             time.sleep(self.retry_sleep)
-            #self.retry_sleep = 1  
             return self.llm_api_generate(prompt)
-          
 
+    def llm_api_generate_batch(self, prompts: List[str]) -> Tuple[List[str], List[int]]:
+        texts, toks = [], []
+        for prompt in prompts:
+            text, tok = self.llm_api_generate(prompt)
+            texts.append(text)
+            toks.append(tok)
+        return texts, toks
 
     def generate(self, prompt):
         if self.api_url is None:
@@ -253,50 +270,57 @@ class Distiller:
         else:
             return self.llm_api_generate(prompt)
 
-    def all_ngrams(self,text):
+    def generate_batch(self, prompts: List[str]) -> Tuple[List[str], List[int]]:
+        if self.api_url is None:
+            return self.llm_local_generate_batch(prompts)
+        else:
+            return self.llm_api_generate_batch(prompts)
+
+    def all_ngrams(self, text):
         text = text.replace("\n", "")
         words = text.split() 
-        n = min(self.max_ngrams,len(words))  
-        for size in range(n,self.min_ngrams,-1):
+        n = min(self.max_ngrams, len(words))  
+        for size in range(n, self.min_ngrams, -1):
             for i in range(n - size + 1):
                 yield " ".join(words[i:i + size])
    
-    def g(self, root_prompt):
-        # Initialize stack with root prompt at depth 0
+    def g(self, root_prompt) -> Generator[Tuple[str, int, float, int], None, None]:
         stack = [(root_prompt, 0)]
     
         while stack:
-            prompt, depth = stack.pop()
-        
-            # Skip if depth exceeds maximum allowed
-            if depth > self.max_depth:
+            batch = []
+            while len(batch) < self.batch_size and stack:
+                prompt, depth = stack.pop()
+                batch.append((prompt, depth))
+            
+            if not batch:
                 continue
-
-            # Generate text from the current prompt
-            t0 = time.time()
-            text, tok = self.generate(prompt)
-            clean_text = self.sanitize(text)
-            td = time.time() - t0
-            yield clean_text, tok, td, depth
- 
-            # Collect new prompts from ngrams
-            new_prompts = []
-            for ngram in self.all_ngrams(clean_text):
-                for prefix in self.prompt_prefixes:
-                    # Format new prompt based on prefix presence
-                    new_prompt = f"{prefix} {ngram}" if prefix else ngram
                 
-                    # Skip if prompt is already in Bloom filter
-                    if new_prompt in self.bloom:
-                        continue
+            prompts = [item[0] for item in batch]
+            depths = [item[1] for item in batch]
+            
+            t0 = time.time()
+            texts, toks = self.generate_batch(prompts)
+            td = time.time() - t0
+            
+            for text, tok, depth in zip(texts, toks, depths):
+                clean_text = self.sanitize(text)
+                #clean_text = clean_text.replace(prompt, '')
+                yield clean_text, tok, td, depth
+                
+                new_prompts = []
+                for ngram in self.all_ngrams(clean_text):
+                    for prefix in self.prompt_prefixes:
+                        new_prompt = f"{prefix} {ngram}" if prefix else ngram
                     
-                    # Add to Bloom filter and queue for processing
-                    self.bloom.add(new_prompt)
-                    if depth + 1 < self.max_depth:
-                        new_prompts.append((new_prompt, depth + 1))
-        
-            # Add new prompts to stack in reverse order for DFS-like processing
-            stack.extend(reversed(new_prompts))
+                        if new_prompt in self.bloom:
+                            continue
+                        
+                        self.bloom.add(new_prompt)
+                        if depth + 1 < self.max_depth:
+                            new_prompts.append((new_prompt, depth + 1))
+            
+                stack.extend(reversed(new_prompts))
 
     def distill(self, root_word):
         t0 = time.time()
@@ -323,7 +347,6 @@ class Distiller:
         except Exception as e:
             print(Fore.RED + f"[!] DB error: {e}" + Style.RESET_ALL)
 
-
 def parse_args():
     parser = argparse.ArgumentParser(description="LLM Distiller with Bloom filter and SQLite storage.")
     parser.add_argument("prompt", help="Root word or prompt to distill.")
@@ -346,13 +369,14 @@ def parse_args():
     parser.add_argument("--secrets-file", default=None, help="Specify the secrets json file.")
     parser.add_argument("--api-hf-provider", default=None, help="Specify the hugging face inference provider")    
     parser.add_argument('--prompt-prefixes', nargs='+', help='List of strings with spaces allowed')
+    parser.add_argument("--batch-size", type=int, default=1, help="Number of prompts to process in parallel (default: 1)")
 
     args = parser.parse_args()
 
-    if parser.parse_args().no_color:
+    if args.no_color:
         Fore.RESET = ""
         Style.RESET_ALL = ""
-    return parser.parse_args()
+    return args
 
 if __name__ == '__main__':
     args = parse_args()
@@ -361,7 +385,6 @@ if __name__ == '__main__':
         torch.set_num_threads(args.threads)
         print(Fore.BLUE + f"[-] Torch set to use {args.threads} CPU threads" + Style.RESET_ALL)
 
-  
     if args.secrets_file is not None:
         parsed_url = urlparse(args.api_url)
         api_key = json.load(open(args.secrets_file,"r"))[parsed_url.hostname]
@@ -377,14 +400,14 @@ if __name__ == '__main__':
         bloom_size=args.bloom_size, 
         bloom_hash_count=args.bloom_hash_count,
         retrieve_to_bloom=args.retrieve_to_bloom,
-        use_unsloth = args.use_unsloth and UNSLOTH_AVAILABLE,
-        api_url = args.api_url,
-        api_key = api_key,
-        max_tokens = args.max_tokens,
-        system_prompt = args.system_prompt,
-        max_ngrams = args.max_ngrams,
-        api_hf_provider = args.api_hf_provider,
-        prompt_prefixes = args.prompt_prefixes,
+        use_unsloth=args.use_unsloth and UNSLOTH_AVAILABLE,
+        api_url=args.api_url,
+        api_key=api_key,
+        max_tokens=args.max_tokens,
+        system_prompt=args.system_prompt,
+        max_ngrams=args.max_ngrams,
+        api_hf_provider=args.api_hf_provider,
+        prompt_prefixes=args.prompt_prefixes,
+        batch_size=args.batch_size,
     )
     distiller.distill(args.prompt)
-

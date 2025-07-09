@@ -24,38 +24,20 @@ from bitarray import bitarray
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from urllib.parse import urlparse
 from huggingface_hub import InferenceClient
-
-sys.setrecursionlimit(10**6)
-
-class BloomFilter:
-    def __init__(self, power2=27, hash_count=8):
-        self.size = (1 << power2) - 1
-        self.bit_array = bitarray(self.size + 1)
-        self.bit_array.setall(0)
-        self.hash_count = hash_count
-
-    def _hashes(self, item):
-        hashes = []
-        prefix = hashlib.sha256(item.encode()).digest()
-        for i in range(self.hash_count):
-            i_bytes = str(i).encode()
-            idx = mmh3.hash(prefix + i_bytes, 0, signed=False) & self.size
-            hashes.append(idx)
-        return hashes
-
-    def add(self, item):
-        for idx in self._hashes(item):
-            self.bit_array[idx] = 1
-
-    def __contains__(self, item):
-        return all(self.bit_array[idx] for idx in self._hashes(item))
+from lib.bloomfilter import BloomFilter
+from lib.utils import sanitize, compress, parse_args
+from sklearn.feature_extraction.text import TfidfVectorizer
+from typing import List, Tuple, Generator, Dict
+from joblib import Memory
 
 class Distiller:
     def __init__(self, model_name, db_path, max_depth=10, compression_level=6, seed=None, 
                  bloom_size=27, bloom_hash_count=6, retrieve_to_bloom=False, use_unsloth=False, 
                  max_tokens=1024, api_url=None, api_key=None, system_prompt=None, 
                  max_ngrams=10, min_ngrams=0, api_hf_provider=None, prompt_prefixes=None,
-                 batch_size=1):
+                 batch_size=1, min_tfidf_score=0.2, max_ngram_length=4, tfidf_cache_dir=None):
+
+        # Initialize core parameters
         self.model_name = model_name
         self.db_path = db_path
         self.max_depth = max_depth
@@ -73,9 +55,21 @@ class Distiller:
         self.min_ngrams = min_ngrams
         self.max_ngrams = max_ngrams
         self.batch_size = batch_size
+        self.min_tfidf_score = min_tfidf_score
+        self.max_ngram_length = max_ngram_length
         self.api_hf_provider = api_hf_provider
         self.prompt_prefixes = prompt_prefixes if prompt_prefixes is not None else ['']
          
+        # Initialize TF-IDF components
+        self.tfidf_memory = Memory(tfidf_cache_dir, verbose=0) if tfidf_cache_dir else None
+        self.tfidf_vectorizer = TfidfVectorizer(
+            ngram_range=(1, max_ngram_length),
+            stop_words='english'
+        )
+        if self.tfidf_memory:
+            self.tfidf_vectorizer = self.tfidf_memory.cache(self.tfidf_vectorizer)
+        self.corpus = []
+
         if api_url is None:
             if seed is not None:
                 torch.manual_seed(seed)
@@ -118,6 +112,7 @@ class Distiller:
         if retrieve_to_bloom:
             self.retrieve_to_bloom()
 
+
     def load_model(self):
         if self.use_unsloth:
             device = 'cuda'
@@ -140,6 +135,7 @@ class Distiller:
         print(Fore.BLUE + f"[!] Using model: {self.model_name} on device: {device}, with database: {self.db_path}." + Style.RESET_ALL)
         return model, tokenizer, device
 
+
     def build_bad_token_ids(self):
         bad_token_ids = []
         for i in range(self.tokenizer.vocab_size):
@@ -147,6 +143,7 @@ class Distiller:
             if self.emoji_pattern.search(decoded):
                 bad_token_ids.append([i])
         return bad_token_ids
+
 
     def init_db(self):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
@@ -168,6 +165,7 @@ class Distiller:
         print(Fore.BLUE + f"[!] Total accumulated tokens in the database {tok}." + Style.RESET_ALL)
         return conn
     
+
     def retrieve_to_bloom(self):
         try:
             cursor = self.conn.cursor()
@@ -179,10 +177,6 @@ class Distiller:
         except Exception as e:
             print(Fore.RED + f"[!] Error retrieving words from database: {e}" + Style.RESET_ALL)
 
-    def sanitize(self, s):
-        s = re.sub(r'\n+', '\n', s)
-        s = re.sub(r' +', ' ', s)
-        return s.strip()
 
     def llm_local_generate(self, prompt):
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
@@ -198,6 +192,7 @@ class Distiller:
         generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
         tokens = outputs.shape[1]
         return generated_text, tokens
+
 
     def llm_local_generate_batch(self, prompts: List[str]) -> Tuple[List[str], List[int]]:
         try:
@@ -226,17 +221,20 @@ class Distiller:
             print(Fore.YELLOW + f"[!] Reduced batch size to {self.batch_size} due to OOM" + Style.RESET_ALL)
             return self.llm_local_generate_batch(prompts)
 
+
     def sleep_unlock(self):
         if self.retry_sleep > 0:
             print(Fore.BLUE + f"[-] Going to sleep for {self.retry_sleep} seconds to avoid overwelming the servers." + Style.RESET_ALL)
             time.sleep(self.retry_sleep)
             self.retty_sleep = 0
 
+
     def sleep_set(self):
         if self.retry_sleep == 0:
             self.retty_sleep = 1
         else:
             self.retty_sleep *= 2
+
 
     def llm_api_generate(self, prompt):
         try:
@@ -256,6 +254,7 @@ class Distiller:
             time.sleep(self.retry_sleep)
             return self.llm_api_generate(prompt)
 
+
     def llm_api_generate_batch(self, prompts: List[str]) -> Tuple[List[str], List[int]]:
         texts, toks = [], []
         for prompt in prompts:
@@ -264,11 +263,13 @@ class Distiller:
             toks.append(tok)
         return texts, toks
 
+
     def generate(self, prompt):
         if self.api_url is None:
             return self.llm_local_generate(prompt)
         else:
             return self.llm_api_generate(prompt)
+
 
     def generate_batch(self, prompts: List[str]) -> Tuple[List[str], List[int]]:
         if self.api_url is None:
@@ -276,14 +277,43 @@ class Distiller:
         else:
             return self.llm_api_generate_batch(prompts)
 
-    def all_ngrams(self, text):
+
+    def get_tfidf_scores(self, text: str) -> Dict[str, float]:
+        """Calculate TF-IDF scores for all n-grams in text"""
+        self.corpus.append(text)
+        try:
+            tfidf_matrix = self.tfidf_vectorizer.fit_transform(self.corpus)
+            feature_names = self.tfidf_vectorizer.get_feature_names_out()
+            scores = zip(feature_names, tfidf_matrix[-1].toarray().flatten())
+            return {ngram: score for ngram, score in scores if score > self.min_tfidf_score}
+        except ValueError:
+            return {}
+
+
+    def all_ngrams(self, text: str) -> Generator[str, None, None]:
+        """Yield n-grams in order of their TF-IDF importance"""
         text = text.replace("\n", "")
-        words = text.split() 
-        n = min(self.max_ngrams, len(words))  
-        for size in range(n, self.min_ngrams, -1):
-            for i in range(n - size + 1):
-                yield " ".join(words[i:i + size])
+        tfidf_scores = self.get_tfidf_scores(text)
+        
+        # Get all possible ngrams
+        words = text.split()
+        all_ngrams = set()
+        for n in range(min(self.max_ngrams, len(words)), self.min_ngrams, -1):
+            for i in range(len(words) - n + 1):
+                ngram = " ".join(words[i:i+n])
+                all_ngrams.add(ngram)
+        
+        # Score and filter ngrams
+        scored_ngrams = [(ngram, tfidf_scores.get(ngram, 0)) 
+                        for ngram in all_ngrams]
+        scored_ngrams.sort(key=lambda x: x[1], reverse=True)
+        
+        # Yield ngrams above threshold first, then others if needed
+        for ngram, score in scored_ngrams:
+            if score >= self.min_tfidf_score or len(scored_ngrams) < 5:  # Keep at least 5 ngrams
+                yield ngram
    
+
     def g(self, root_prompt) -> Generator[Tuple[str, int, float, int], None, None]:
         stack = [(root_prompt, 0)]
     
@@ -304,12 +334,12 @@ class Distiller:
             td = time.time() - t0
             
             for text, tok, depth in zip(texts, toks, depths):
-                clean_text = self.sanitize(text)
+                clean_text = sanitize(text)
                 #clean_text = clean_text.replace(prompt, '')
                 yield clean_text, tok, td, depth
                 
                 new_prompts = []
-                for ngram in self.all_ngrams(clean_text):
+                for ngram in all_ngrams(clean_text):
                     for prefix in self.prompt_prefixes:
                         new_prompt = f"{prefix} {ngram}" if prefix else ngram
                     
@@ -322,6 +352,7 @@ class Distiller:
             
                 stack.extend(reversed(new_prompts))
 
+
     def distill(self, root_word):
         t0 = time.time()
         n = 0
@@ -332,7 +363,7 @@ class Distiller:
                     ts = tok / td if td > 0 else 0
                     print(Fore.YELLOW + f"[+] Generation: {n}, depth: {depth}, tokens: {tok} at {round(ts, 2)} tokens/s\n" +
                           Fore.GREEN + f"[{text}]" + Style.RESET_ALL)
-                    data = zlib.compress(text.encode("utf8"), level=self.compression_level)
+                    data = compress(text, level=self.compression_level)
                     self.conn.execute(
                         "INSERT or ignore INTO texts (seed, model, word, data, tok) VALUES (?,?, ?, ?,?)",
                         (self.seed, self.model_name, root_word, data, tok)
@@ -346,37 +377,6 @@ class Distiller:
                     n += 1
         except Exception as e:
             print(Fore.RED + f"[!] DB error: {e}" + Style.RESET_ALL)
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="LLM Distiller with Bloom filter and SQLite storage.")
-    parser.add_argument("prompt", help="Root word or prompt to distill.")
-    parser.add_argument("--model", default="distilgpt2", help="Huggingface model name (default: distilgpt2).")
-    parser.add_argument("--db", default="words/data.db", help="Path to SQLite database (default: words/data.db).")
-    parser.add_argument("--max-depth", type=int, default=10, help="Max recursion depth (default: 10).")
-    parser.add_argument("--max-tokens", type=int, default=1024, help="Max tokens (default: 1024).")
-    parser.add_argument("--compression-level", type=int, choices=range(1, 10), default=6, help="Zlib compression level (1-9, default: 6).")
-    parser.add_argument("--seed", type=int, help="Torch manual seed (optional).")
-    parser.add_argument("--bloom-size", type=int, default=26, help="Bloom filter size (default: 100,000,000).")
-    parser.add_argument("--bloom-hash-count", type=int, default=6, help="Bloom filter hash count (default: 6).")
-    parser.add_argument("--max-ngrams", type=int, default=10, help="Max ngrams (default: 10).")
-    parser.add_argument("--no-color", action="store_true", help="Disable colored output.")
-    parser.add_argument("--retrieve-to-bloom", action="store_true", help="Retrieve words from the database to the Bloom filter.")
-    parser.add_argument("--use-unsloth", action="store_true", help="Use unsloth")
-    parser.add_argument("--api-url", default=None, help="OpenAI compatible API url.")
-    parser.add_argument("--api-key", default=None, help="API key for auth.")
-    parser.add_argument("--system-prompt", default='You are a helpful AI assistant.', help="System prompt")
-    parser.add_argument("--threads", type=int, default=None, help="Number of CPU threads for PyTorch (default: auto)")
-    parser.add_argument("--secrets-file", default=None, help="Specify the secrets json file.")
-    parser.add_argument("--api-hf-provider", default=None, help="Specify the hugging face inference provider")    
-    parser.add_argument('--prompt-prefixes', nargs='+', help='List of strings with spaces allowed')
-    parser.add_argument("--batch-size", type=int, default=1, help="Number of prompts to process in parallel (default: 1)")
-
-    args = parser.parse_args()
-
-    if args.no_color:
-        Fore.RESET = ""
-        Style.RESET_ALL = ""
-    return args
 
 if __name__ == '__main__':
     args = parse_args()

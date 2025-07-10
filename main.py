@@ -301,7 +301,9 @@ class Distiller:
 
                 # Initialize TF-IDF components
                 self.corpus.append(clean_text)
-                self.tfidf_helper = TFIDFHelper(corpus = self.corpus, min_tfidf_score = self.min_tfidf_score, min_ngrams = self.min_ngrams, max_ngrams = self.max_ngrams)
+
+                if self.ngram_mode:
+                    self.tfidf_helper = TFIDFHelper(corpus = self.corpus, min_tfidf_score = self.min_tfidf_score, min_ngrams = self.min_ngrams, max_ngrams = self.max_ngrams)
          
                 yield clean_text, tok, td, depth
                 

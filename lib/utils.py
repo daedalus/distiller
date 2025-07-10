@@ -1,13 +1,20 @@
+import os
 import re
 import zlib
 import zstd
+import time
 import argparse
+import subprocess
 from colorama import Fore, Style
+from pathlib import Path
+from shutil import copy2
+
 
 def sanitize(s):
     s = re.sub(r'\n+', '\n', s)
     #s = re.sub(r' +', ' ', s)
     return s #.strip()
+
 
 def compress(text, level=6, algorithm="zlib"):
     binary = text.encode("utf8")
@@ -42,7 +49,8 @@ def parse_args():
     parser.add_argument("--compression-algo", default='zlib', help="Specify the compresion algo to use.")    
     parser.add_argument('--prompt-prefixes', nargs='+', help='List of strings with spaces allowed')
     parser.add_argument("--batch-size", type=int, default=1, help="Number of prompts to process in parallel (default: 1)")
-    parser.add_argument("--remove-prompt", action="store_true", help="Remove the prompt from the generation.")
+    parser.add_argument("--remove-prompt", action="store_true", default=False, help="Remove the prompt from generation.")
+    parser.add_argument("--ngram-mode", action="store_true", default=False, help="ngram mode from generation.")
     parser.add_argument("--min-tfidf-score",type=float, default=0.2, help="Specify the min_tfidf_score.")
 
 
@@ -62,3 +70,34 @@ def all_ngrams(text, n, s):
                 yield " ".join(words[i:i + size])
 
 
+def backup_file(filepath, path):
+    """
+    Back up a file to $path/.$name.$timestamp.$extension.bkp using reflink if available.
+
+    Args:
+        filepath (str): Path to the original file to back up.
+        path (str): Destination directory to store the backup.
+    """
+    src = Path(filepath)
+    dst_dir = Path(path)
+
+    if not src.is_file():
+        raise FileNotFoundError(f"Source file does not exist: {filepath}")
+
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    name = src.stem
+    ext = src.suffix.lstrip(".")
+    timestamp = int(time.time())
+    
+    backup_name = f".{name}.{timestamp}.{ext}.bkp"
+    dst = dst_dir / backup_name
+
+    try:
+        # Attempt reflink copy (works on cp implementations with --reflink)
+        subprocess.run(["cp", "--reflink=auto", src, dst], check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # Fallback to standard copy
+        copy2(src, dst)
+
+    return str(dst)

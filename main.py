@@ -25,7 +25,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from typing import List, Tuple, Generator, Dict
 from joblib import Memory
 from lib.bloomfilter import BloomFilter
-from lib.utils import sanitize, compress, parse_args
+from lib.utils import sanitize, compress, parse_args, backup_file
 from lib.TFIDFHelper import TFIDFHelper
 
 
@@ -34,7 +34,7 @@ class Distiller:
                  bloom_size=27, bloom_hash_count=6, retrieve_to_bloom=False, use_unsloth=False, 
                  max_tokens=1024, api_url=None, api_key=None, system_prompt=None, 
                  max_ngrams=10, min_ngrams=2, api_hf_provider=None, prompt_prefixes=None,
-                 batch_size=1, min_tfidf_score=0.2, tfidf_cache_dir=None, remove_prompt = False, compression_algo='zlib', remote_hostname='localhost'):
+                 batch_size=1, min_tfidf_score=0.2, tfidf_cache_dir=None, remove_prompt = False, compression_algo='zlib', remote_hostname='localhost', ngram_mode=False):
 
         # Initialize core parameters
         self.model_name = model_name
@@ -60,7 +60,8 @@ class Distiller:
         self.remove_prompt = remove_prompt
         self.compression_algo = compression_algo     
         self.remote_hostname = remote_hostname
- 
+        self.ngram_mode = ngram_mode 
+
         self.corpus = []
     
         if api_url is None:
@@ -305,9 +306,15 @@ class Distiller:
                 yield clean_text, tok, td, depth
                 
                 new_prompts = []
-                for ngram in self.tfidf_helper.all_ngrams(clean_text):
+        
+                if self.ngram_mode:
+                    lines = self.tfidf_helper.all_ngrams(clean_text) 
+                else: 
+                    lines = clean_text.split("\n")
+
+                for line in lines:
                     for prefix in self.prompt_prefixes:
-                        new_prompt = f"{prefix} {ngram}" if prefix else ngram
+                        new_prompt = f"{prefix} {line}" if prefix else line
                     
                         if new_prompt in self.bloom:
                             continue
@@ -354,6 +361,9 @@ class Distiller:
 if __name__ == '__main__':
     args = parse_args()
 
+    if args.db:
+       backup_file(args.db, ".")
+
     hostname = 'localhost'
     if args.api_url is not None:
         remote_hostname = urlparse(args.api_url).hostname
@@ -394,6 +404,7 @@ if __name__ == '__main__':
         min_tfidf_score=args.min_tfidf_score,
         compression_algo = args.compression_algo,
         remote_hostname = remote_hostname,
+        ngram_mode = args.ngram_mode,
     )
     if args.load_prompts_from_file:
 

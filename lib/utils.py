@@ -19,9 +19,15 @@ def sanitize(s):
 def compress(text, level=6, algorithm="zlib"):
     binary = text.encode("utf8")
     if algorithm == 'zlib':
-       return zlib.compress(binary, level=level)
+        return zlib.compress(binary, level=level)
     if algorithm == 'zstd':
-       return zstd.compress(binary, level)
+        return zstd.compress(binary, level)
+
+
+def decompress(text, algorithm="zlib"):
+    if algorithm == 'zlib': r = zlib.decompress(text)
+    if algorithm == 'zstd': r = zstd.decompress(text)
+    return r.decode("utf8")   
 
 
 def parse_args():
@@ -52,6 +58,13 @@ def parse_args():
     parser.add_argument("--remove-prompt", action="store_true", default=False, help="Remove the prompt from generation.")
     parser.add_argument("--ngram-mode", action="store_true", default=False, help="ngram mode from generation.")
     parser.add_argument("--min-tfidf-score",type=float, default=0.2, help="Specify the min_tfidf_score.")
+    parser.add_argument("--save-to-textfile", default=None, help="Specify a text file to save generated text.")
+    parser.add_argument("--q-mode", action="store_true", default=None, help="Q-mode.")
+    parser.add_argument("--randomize-prompts", action="store_true", default=None, help="Randomize prompts when read from file.")
+    parser.add_argument("--randomize-model-retry", action="store_true", default=None, help="Randomize model to retry.")
+    parser.add_argument("--randomize-remote-endpoint", action="store_true", default=None, help="Randomize remote endpoint.")
+    parser.add_argument("--strip-think-tag-form-prompt", action="store_true", default=None, help="Strip the think tag from prompts.")
+    parser.add_argument("--exp-backoff", action="store_true", default=False, help="Set exponential backoff.")
 
 
     args = parser.parse_args()
@@ -72,11 +85,24 @@ def all_ngrams(text, n, s):
 
 def backup_file(filepath, path):
     """
-    Back up a file to $path/.$name.$timestamp.$extension.bkp using reflink if available.
+    Create a backup of the specified file in the given directory.
+
+    The backup file will be named:
+        .$name.$timestamp.$extension.bkp
+
+    A reflink copy is attempted first (if supported), falling back to a full copy.
+    Keeps only the 3 most recent backups, deleting older ones.
 
     Args:
-        filepath (str): Path to the original file to back up.
-        path (str): Destination directory to store the backup.
+        filepath (str): Path to the source file.
+        path (str): Destination directory for the backup.
+
+    Returns:
+        str: Path to the created backup file.
+
+    Raises:
+        FileNotFoundError: If the source file does not exist.
+        Exception: If both reflink and standard copy fail.
     """
     src = Path(filepath)
     dst_dir = Path(path)
@@ -89,15 +115,26 @@ def backup_file(filepath, path):
     name = src.stem
     ext = src.suffix.lstrip(".")
     timestamp = int(time.time())
-    
     backup_name = f".{name}.{timestamp}.{ext}.bkp"
     dst = dst_dir / backup_name
 
     try:
-        # Attempt reflink copy (works on cp implementations with --reflink)
-        subprocess.run(["cp", "--reflink=auto", src, dst], check=True)
+        subprocess.run(["cp", "--reflink=auto", str(src), str(dst)], check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
-        # Fallback to standard copy
-        copy2(src, dst)
+        try:
+            copy2(src, dst)
+        except Exception as e:
+            raise Exception(f"Failed to back up file: {e}")
+
+    # Delete older backups, keeping only the 3 most recent
+    pattern = f".{name}.*.{ext}.bkp"
+    backups = sorted(dst_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    for old in backups[3:]:
+        try:
+            old.unlink()
+        except Exception as e:
+            print(f"Warning: failed to delete old backup {old}: {e}")
 
     return str(dst)
+

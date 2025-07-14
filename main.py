@@ -17,6 +17,7 @@ import time
 import argparse
 import openai
 import json
+import random
 from typing import List, Tuple, Generator
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from urllib.parse import urlparse
@@ -25,16 +26,19 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from typing import List, Tuple, Generator, Dict
 from joblib import Memory
 from lib.bloomfilter import BloomFilter
-from lib.utils import sanitize, compress, parse_args, backup_file
+from lib.utils import sanitize, compress, decompress, parse_args, backup_file
 from lib.TFIDFHelper import TFIDFHelper
 
 
 class Distiller:
     def __init__(self, model_name, db_path, max_depth=10, compression_level=6, seed=None, 
-                 bloom_size=27, bloom_hash_count=6, retrieve_to_bloom=False, use_unsloth=False, 
+                 bloom_size=24, bloom_hash_count=6, retrieve_to_bloom=False, use_unsloth=False, 
                  max_tokens=1024, api_url=None, api_key=None, system_prompt=None, 
                  max_ngrams=10, min_ngrams=2, api_hf_provider=None, prompt_prefixes=None,
-                 batch_size=1, min_tfidf_score=0.2, tfidf_cache_dir=None, remove_prompt = False, compression_algo='zlib', remote_hostname='localhost', ngram_mode=False):
+                 batch_size=1, min_tfidf_score=0.2, tfidf_cache_dir=None, remove_prompt = False, 
+                 compression_algo='zlib', remote_hostname='localhost', ngram_mode=False, save_to_textfile=None, 
+                 q_mode=False, randomize_model_retry=False, strip_think_tag_form_prompt = False,
+                 randomize_remote_endpoint = False, secrets=None, exp_backoff=False ):
 
         # Initialize core parameters
         self.model_name = model_name
@@ -61,9 +65,31 @@ class Distiller:
         self.compression_algo = compression_algo     
         self.remote_hostname = remote_hostname
         self.ngram_mode = ngram_mode 
+        self.save_to_textfile = save_to_textfile
+        self.q_mode = q_mode
+        self.randomize_model_retry = randomize_model_retry
+        self.strip_think_tag_from_prompt = strip_think_tag_form_prompt 
+        self.randomize_remote_endpoint = randomize_remote_endpoint 
+        self.secrets = secrets
+        self.exp_backoff = int(exp_backoff)
 
         self.corpus = []
     
+ 
+        if self.randomize_model_retry or self.randomize_remote_endpoint:
+            self.inventory = json.load(open('inventory.json','r'))['inventory'] #[self.remote_hostname]
+
+        """
+        if self.q_mode:
+           with open(".q_done.txt","r") as fp:
+               for line in fp:
+                   print("PRELOADING:",line)
+                   self.bloom.add(line.strip())
+        """
+        if self.save_to_textfile:
+            print(Fore.BLUE + f"[!] Saving to textfile: {self.save_to_textfile}" + Style.RESET_ALL)
+            self.textfile = open(self.save_to_textfile, "a")
+
         if api_url is None:
             if seed is not None:
                 torch.manual_seed(seed)
@@ -107,7 +133,6 @@ class Distiller:
         self.conn = self.init_db()
         if retrieve_to_bloom:
             self.retrieve_to_bloom()
-
 
     def load_model(self):
         if self.use_unsloth:
@@ -156,6 +181,12 @@ class Distiller:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             """)
+        conn.execute("""
+            CREATE TABLE If NOT EXISTS prompts (
+                id INTEGER PRIMARY KEY,
+                prompt TEXT NOT NULL UNIQUE
+            );
+            """)
         cursor = conn.cursor()
         cursor.execute("select sum(tok) from texts;")
         tok = cursor.fetchone()[0]
@@ -166,16 +197,26 @@ class Distiller:
     def retrieve_to_bloom(self):
         try:
             cursor = self.conn.cursor()
-            cursor.execute("SELECT data FROM texts")
+            cursor.execute("SELECT data,compression_algo FROM texts")
             rows = cursor.fetchall()
             for row in rows:
-                if row[0]: self.bloom.add(zlib.decompress(row[0]).decode("utf8"))
+                self.bloom.add(decompress(*row))        
             print(Fore.GREEN + "[+] Retrieved words from database to Bloom filter." + Style.RESET_ALL)
         except Exception as e:
             print(Fore.RED + f"[!] Error retrieving words from database: {e}" + Style.RESET_ALL)
 
+        if self.q_mode:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute("select prompt from prompts;")
+                for prompt in cursor.fetchall():
+                    self.bloom.add(prompt[0].strip())
+                print(Fore.GREEN + "[+] Retrieved prompts from database to Bloom filter." + Style.RESET_ALL)
+            except Exception as e:
+                print(Fore.RED + f"[!] Error retrieving prompts from database: {e}" + Style.RESET_ALL)
 
     def llm_local_generate(self, prompt):
+        print(Fore.YELLOW + f"[+] localost Processing prompt: {prompt}" + Style.RESET_ALL)
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
         outputs = self.model.generate(
             **inputs,
@@ -192,6 +233,7 @@ class Distiller:
 
 
     def llm_local_generate_batch(self, prompts: List[str]) -> Tuple[List[str], List[int]]:
+        print(Fore.YELLOW + f"[+] Processing prompt: {str(prompts)}" + Style.RESET_ALL)
         try:
             inputs = self.tokenizer(
                 prompts,
@@ -234,6 +276,7 @@ class Distiller:
 
 
     def llm_api_generate(self, prompt):
+        print(Fore.YELLOW + f"[+] {self.remote_hostname} Processing prompt: {prompt}" + Style.RESET_ALL)
         try:
             response = self.api_client.chat.completions.create(
                 model=self.api_model,
@@ -244,11 +287,32 @@ class Distiller:
                 max_tokens=self.max_tokens,
             )
             self.retry_sleep = 1
-            return response.choices[0].message.content, response.usage.completion_tokens
+            try:
+                return response.choices[0].message.content, response.usage.completion_tokens
+            except Exception as e:
+                print(e)
+                print(response)
+                                
         except Exception as e:
-            self.retry_sleep *= 2
+            
+            self.retry_sleep <<= self.exp_backoff
+
             print(Fore.RED +  f"[!] {self.remote_hostname}: Error generating commit message: {e} retry in {self.retry_sleep}" + Style.RESET_ALL)
             time.sleep(self.retry_sleep)
+
+            
+            if self.randomize_remote_endpoint:
+                endpoints = self.inventory['remote_endpoints_api'] 
+                self.api_url = random.choice(list(endpoints.values()))
+                self.remote_hostname = urlparse(self.api_url).hostname
+                self.api_key = self.secrets[hostname]
+                print(f"[!] {self.remote_hostname}: Switched to new provider {self.api_url}.")
+
+            if self.randomize_model_retry:
+                self.api_model = random.choice(self.inventory['remote_endpoints_models'][self.remote_hostname])
+                self.model_name = self.api_model
+                print(f"[!] {self.remote_hostname}: Switched to new model {self.api_model}.")
+
             return self.llm_api_generate(prompt)
 
 
@@ -276,14 +340,28 @@ class Distiller:
 
 
     def g(self, root_prompt) -> Generator[Tuple[str, int, float, int], None, None]:
+
+
+        print(f"{self.ngram_mode}")
         stack = [(root_prompt, 0)]
     
         while stack:
             batch = []
             while len(batch) < self.batch_size and stack:
                 prompt, depth = stack.pop()
-                batch.append((prompt, depth))
-            
+ 
+                if self.strip_think_tag_from_prompt:
+                    prompt = cleaned = re.sub(r'<think>.*?</think>', '', prompt, flags=re.DOTALL)
+
+                """
+                if prompt.strip() not in self.bloom:
+                    batch.append((prompt, depth))
+                    self.bloom.add(prompt.strip())        
+                else:
+                    print("in bloom", prompt)
+                """
+                batch.append((prompt,depth))
+
             if not batch:
                 continue
                 
@@ -313,15 +391,16 @@ class Distiller:
                     lines = self.tfidf_helper.all_ngrams(clean_text) 
                 else: 
                     lines = clean_text.split("\n")
+                    print(f"Lines split: {len(lines)}")
 
                 for line in lines:
                     for prefix in self.prompt_prefixes:
                         new_prompt = f"{prefix} {line}" if prefix else line
-                    
+                   
                         if new_prompt in self.bloom:
                             continue
-                        
                         self.bloom.add(new_prompt)
+
                         if depth + 1 < self.max_depth:
                             new_prompts.append((new_prompt, depth + 1))
             
@@ -329,9 +408,13 @@ class Distiller:
 
 
     def distill(self, root_word):
-        print(Fore.YELLOW + f"[+] Processing prompt: {root_word}" + Style.RESET_ALL)
         t0 = time.time()
         n = 0
+        if self.q_mode:
+            self.q_file = open(".q_done.txt","a")
+            with self.q_file as fp_qmode:
+                fp_qmode.write(root_word)
+                fp_qmode.flush()
         try:
             with self.conn:
                 for text, tok, td, depth in self.g(root_word):
@@ -344,7 +427,17 @@ class Distiller:
                         "INSERT or ignore INTO texts (seed, model, word, data, tok, compression_algo) VALUES (?,?,?,?,?,?)",
                         (self.seed, self.model_name, root_word, data, tok, self.compression_algo)
                     )
+                    if self.q_mode:
+                        #self.conn.execute(f"INSERT or ignore INTO prompts (prompt) values ('{root_word}');")                    
+                        self.conn.execute(f"INSERT or ignore INTO prompts (prompt) values (?)" , (root_word.strip(),))                    
+
                     self.conn.commit()
+
+                    if self.save_to_textfile:
+                        with self.textfile as fp_textfile:
+                          fp_textfile.writelines(text)
+                          fp_textfile.textfile.flush()
+
                     lt, lc = len(text), len(data)
                     print(Fore.BLUE + f"[+] Text size: {lt} bytes, Compressed data size ({self.compression_algo}): {lc} bytes, ratio: {round(lt/lc,2)}" + Style.RESET_ALL)
                     
@@ -364,7 +457,7 @@ if __name__ == '__main__':
     args = parse_args()
 
     if args.db:
-       backup_file(args.db, ".")
+       backup_file(args.db, "./words/")
 
     hostname = 'localhost'
     if args.api_url is not None:
@@ -380,9 +473,11 @@ if __name__ == '__main__':
     if args.secrets_file is not None:
         hostname = urlparse(args.api_url).hostname
 
-        api_key = json.load(open(args.secrets_file,"r"))[hostname]
+        secrets = json.load(open(args.secrets_file,"r"))
+        api_key = secrets[hostname]
     else:
         api_key = args.api_key
+
 
     distiller = Distiller(
         model_name=args.model,
@@ -407,10 +502,19 @@ if __name__ == '__main__':
         compression_algo = args.compression_algo,
         remote_hostname = remote_hostname,
         ngram_mode = args.ngram_mode,
+        save_to_textfile = args.save_to_textfile,
+        q_mode = args.q_mode,
+        randomize_model_retry = args.randomize_model_retry,
+        strip_think_tag_form_prompt = args.strip_think_tag_form_prompt,
+        randomize_remote_endpoint = args.randomize_remote_endpoint,
+        secrets = secrets,
+        exp_backoff = args.exp_backoff
     )
     if args.load_prompts_from_file:
-
-        for prompt in open(args.load_prompts_from_file):
+        prompts = [prompt for prompt in open(args.load_prompts_from_file)]
+        if args.randomize_prompts:
+            random.shuffle(prompts)
+        for prompt in prompts:
             distiller.distill(prompt) 
     if args.prompt:
         distiller.distill(args.prompt)

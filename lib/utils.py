@@ -63,8 +63,10 @@ def parse_args():
     parser.add_argument("--randomize-prompts", action="store_true", default=None, help="Randomize prompts when read from file.")
     parser.add_argument("--randomize-model-retry", action="store_true", default=None, help="Randomize model to retry.")
     parser.add_argument("--randomize-remote-endpoint", action="store_true", default=None, help="Randomize remote endpoint.")
-    parser.add_argument("--strip-think-tag-form-prompt", action="store_true", default=None, help="Strip the think tag from prompts.")
+    parser.add_argument("--strip-think-tag-form-prompt", action="store_true", default=None, help="Strip the <think> and </think> tags from prompts.")
     parser.add_argument("--exp-backoff", action="store_true", default=False, help="Set exponential backoff.")
+    parser.add_argument("--stream", action="store_true", default=False, help="Set stream.")
+
 
 
     args = parser.parse_args()

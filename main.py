@@ -38,7 +38,7 @@ class Distiller:
                  batch_size=1, min_tfidf_score=0.2, tfidf_cache_dir=None, remove_prompt = False, 
                  compression_algo='zlib', remote_hostname='localhost', ngram_mode=False, save_to_textfile=None, 
                  q_mode=False, randomize_model_retry=False, strip_think_tag_form_prompt = False,
-                 randomize_remote_endpoint = False, secrets=None, exp_backoff=False ):
+                 randomize_remote_endpoint = False, secrets=None, exp_backoff=False, stream=False ):
 
         # Initialize core parameters
         self.model_name = model_name
@@ -47,6 +47,7 @@ class Distiller:
         self.compression_level = compression_level
         self.bloom = BloomFilter(power2=bloom_size, hash_count=bloom_hash_count)
         self.TOK = 0
+        self.runtime = 0
         self.seed = seed
         self.use_unsloth = use_unsloth
         self.max_tokens = max_tokens
@@ -72,7 +73,12 @@ class Distiller:
         self.randomize_remote_endpoint = randomize_remote_endpoint 
         self.secrets = secrets
         self.exp_backoff = int(exp_backoff)
+        self.exp_backoff_endpoint = {}
 
+        self.stream = stream 
+
+        if stream:
+            self.tokenizer = AutoTokenizer.from_pretrained("gpt2")
         self.corpus = []
     
  
@@ -275,8 +281,40 @@ class Distiller:
             self.retty_sleep *= 2
 
 
+    def backoff_wait(self):
+        if self.api_url in self.exp_backoff_endpoint:
+            self.exp_backoff_endpoint[self.api_url] <<= self.exp_backoff
+        else:
+            self.exp_backoff_endpoint[self.api_url] = 1
+
+        self.retry_sleep = self.exp_backoff_endpoint[self.api_url]
+        time.sleep(self.retry_sleep)
+
+
+    def switch_endpoint_and_model(self):
+        if self.randomize_remote_endpoint:
+            endpoints = self.inventory['remote_endpoints_api']
+            hostname = random.choice([e for e in endpoints])
+            self.api_url = endpoints[hostname]['url']
+            self.remote_hostname = hostname
+            self.api_key = self.secrets[hostname]
+            self.stream |= endpoints[hostname]['stream']
+ 
+            if self.stream:
+                self.tokenizer = AutoTokenizer.from_pretrained("gpt2")
+
+            self.api_client = openai.OpenAI(base_url=self.api_url, api_key=self.api_key)
+            print(f"[!] [{self.remote_hostname}] Switched to new provider {self.api_url}.")
+
+        if self.randomize_model_retry:
+            print("randomize model")
+            self.api_model = random.choice(self.inventory['remote_endpoints_models'][self.remote_hostname])
+            self.model_name = self.api_model
+            print(f"[!] [{self.remote_hostname}] Switched to new model {self.api_model}.")
+ 
+
     def llm_api_generate(self, prompt):
-        print(Fore.YELLOW + f"[+] {self.remote_hostname} Processing prompt: {prompt}" + Style.RESET_ALL)
+        print(Fore.YELLOW + f"[+] [{self.remote_hostname}] Processing prompt: {prompt}, stream:{self.stream}" + Style.RESET_ALL)
         try:
             response = self.api_client.chat.completions.create(
                 model=self.api_model,
@@ -285,34 +323,30 @@ class Distiller:
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=self.max_tokens,
+                stream = self.stream,
             )
             self.retry_sleep = 1
+            """
             try:
                 return response.choices[0].message.content, response.usage.completion_tokens
             except Exception as e:
                 print(e)
-                print(response)
-                                
+                print(response, type(response), dir(response))
+            """     
+            if isinstance(response, openai.Stream):
+                data = ""
+                for chunk in response:
+                    if chunk.choices[0].delta.content is not None:
+                        data += chunk.choices[0].delta.content
+                tok = len(self.tokenizer.encode(data))
+                return data, tok
+            return response.choices[0].message.content, response.usage.completion_tokens       
+
+                 
         except Exception as e:
-            
-            self.retry_sleep <<= self.exp_backoff
-
-            print(Fore.RED +  f"[!] {self.remote_hostname}: Error generating commit message: {e} retry in {self.retry_sleep}" + Style.RESET_ALL)
-            time.sleep(self.retry_sleep)
-
-            
-            if self.randomize_remote_endpoint:
-                endpoints = self.inventory['remote_endpoints_api'] 
-                self.api_url = random.choice(list(endpoints.values()))
-                self.remote_hostname = urlparse(self.api_url).hostname
-                self.api_key = self.secrets[hostname]
-                print(f"[!] {self.remote_hostname}: Switched to new provider {self.api_url}.")
-
-            if self.randomize_model_retry:
-                self.api_model = random.choice(self.inventory['remote_endpoints_models'][self.remote_hostname])
-                self.model_name = self.api_model
-                print(f"[!] {self.remote_hostname}: Switched to new model {self.api_model}.")
-
+            print(Fore.RED +  f"[!] [{self.remote_hostname}] Error generating commit message: {e} retry in {self.retry_sleep}" + Style.RESET_ALL)
+            self.backoff_wait()
+            self.switch_endpoint_and_model()
             return self.llm_api_generate(prompt)
 
 
@@ -409,6 +443,7 @@ class Distiller:
 
     def distill(self, root_word):
         t0 = time.time()
+        self.TOK = 0
         n = 0
         if self.q_mode:
             self.q_file = open(".q_done.txt","a")
@@ -419,8 +454,9 @@ class Distiller:
             with self.conn:
                 for text, tok, td, depth in self.g(root_word):
                     self.TOK += tok
+                    self.runtime += td
                     ts = tok / td if td > 0 else 0
-                    print(Fore.YELLOW + f"[+] {self.remote_hostname}:  Generation: {n}, depth: {depth}, tokens: {tok} at {round(ts, 2)} tokens/s\n" +
+                    print(Fore.YELLOW + f"[+] [{self.remote_hostname}]  Generation: {n}, depth: {depth}, tokens: {tok} at {round(ts, 2)} tokens/s\n" +
                           Fore.GREEN + f"[{text}]" + Style.RESET_ALL)
                     data = compress(text, self.compression_level, self.compression_algo)
                     self.conn.execute(
@@ -441,8 +477,7 @@ class Distiller:
                     lt, lc = len(text), len(data)
                     print(Fore.BLUE + f"[+] Text size: {lt} bytes, Compressed data size ({self.compression_algo}): {lc} bytes, ratio: {round(lt/lc,2)}" + Style.RESET_ALL)
                     
-                    tdt = time.time() - t0
-                    print(f"[+] Total generated tokens: {self.TOK}, total elapsed time: {round(tdt, 2)} seconds, total tokens/s: {round(self.TOK/tdt, 2)}")
+                    print(f"[+] Total generated tokens: {self.TOK}, total elapsed time: {round(self.runtime, 2)} seconds, total tokens/s: {round(self.TOK/self.runtime, 2)}")
 
                     if n % 10 == 0:                  
                         cursor = self.conn.cursor()
@@ -508,7 +543,8 @@ if __name__ == '__main__':
         strip_think_tag_form_prompt = args.strip_think_tag_form_prompt,
         randomize_remote_endpoint = args.randomize_remote_endpoint,
         secrets = secrets,
-        exp_backoff = args.exp_backoff
+        exp_backoff = args.exp_backoff,
+        stream = args.stream
     )
     if args.load_prompts_from_file:
         prompts = [prompt for prompt in open(args.load_prompts_from_file)]

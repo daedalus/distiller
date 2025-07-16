@@ -1,11 +1,48 @@
 {
   "inventory": {
     "remote_endpoints_api": {
-      "api.groq.com":"https://api.groq.com/openai/v1",
-      "api.cerebras.ai":"https://api.cerebras.ai/v1",
-      "openrouter.ai":"https://openrouter.ai/api/v1"
+      "generativelanguage.googleapis.com": {
+          "url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+          "stream": false
+          },
+      "api.groq.com": {
+          "url": "https://api.groq.com/openai/v1", 
+          "stream": true
+          },
+      "api.cerebras.ai": {
+          "url": "https://api.cerebras.ai/v1", 
+          "stream": true
+          },
+      "openrouter.ai": {
+          "url": "https://openrouter.ai/api/v1", 
+          "stream": true
+      },
+      "api.fireworks.ai": {
+          "url": "https://api.fireworks.ai/inference/v1", 
+          "stream": true
+      },
+      "api.together.xyz": {
+          "url": "https://api.together.xyz/v1", 
+          "stream": false
+      }
     }, 
    "remote_endpoints_models": {
+     "generativelanguage.googleapis.com": [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash"
+
+     ],
+     "api.together.xyz": [
+        "moonshotai/Kimi-K2-Instruct"
+     ],
+     "api.fireworks.ai": [
+        "accounts/fireworks/models/deepseek-r1-0528",
+        "accounts/fireworks/models/qwen3-235b-a22b",
+        "accounts/fireworks/models/qwen3-30b-a3b"
+     ],
+     "localhost": [
+        "granite-3.2-8b-instruct@q6_k"
+     ],
      "api.groq.com": [
         "allam-2-7b", 
         "compound-beta", 
@@ -18,9 +55,6 @@
         "llama3-8b-8192", 
         "meta-llama/llama-4-maverick-17b-128e-instruct", 
         "meta-llama/llama-4-scout-17b-16e-instruct", 
-        "meta-llama/llama-guard-4-12b", 
-        "meta-llama/llama-prompt-guard-2-22m", 
-        "meta-llama/llama-prompt-guard-2-86m", 
         "mistral-saba-24b", 
         "qwen-qwq-32b", 
         "qwen/qwen3-32b"

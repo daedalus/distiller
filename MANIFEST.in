@@ -1,0 +1,7 @@
+include README.md
+include LICENSE
+include requirements.txt
+include requirements_unsloth.txt
+include inventory.json
+recursive-include lib *.py
+recursive-include scripts *.py

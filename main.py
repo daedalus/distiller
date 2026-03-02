@@ -9,8 +9,6 @@ except:
     print(Fore.RED + "[!] Unsloth unavailable"+ Style.RESET_ALL)
 import os
 import re
-import zlib
-import sys
 import sqlite3
 import torch
 import time
@@ -18,13 +16,10 @@ import argparse
 import openai
 import json
 import random
-from typing import List, Tuple, Generator
+from typing import List, Tuple, Generator, Dict
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from urllib.parse import urlparse
 from huggingface_hub import InferenceClient
-from sklearn.feature_extraction.text import TfidfVectorizer
-from typing import List, Tuple, Generator, Dict
-from joblib import Memory
 from lib.bloomfilter import BloomFilter
 from lib.utils import sanitize, compress, decompress, parse_args, backup_file
 from lib.TFIDFHelper import TFIDFHelper
@@ -222,7 +217,7 @@ class Distiller:
                 print(Fore.RED + f"[!] Error retrieving prompts from database: {e}" + Style.RESET_ALL)
 
     def llm_local_generate(self, prompt):
-        print(Fore.YELLOW + f"[+] localost Processing prompt: {prompt}" + Style.RESET_ALL)
+        print(Fore.YELLOW + f"[+] [localhost] Processing prompt: {prompt}" + Style.RESET_ALL)
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
         outputs = self.model.generate(
             **inputs,
@@ -271,19 +266,19 @@ class Distiller:
         if self.retry_sleep > 0:
             print(Fore.BLUE + f"[-] Going to sleep for {self.retry_sleep} seconds to avoid overwelming the servers." + Style.RESET_ALL)
             time.sleep(self.retry_sleep)
-            self.retty_sleep = 0
+            self.retry_sleep = 0
 
 
     def sleep_set(self):
         if self.retry_sleep == 0:
-            self.retty_sleep = 1
+            self.retry_sleep = 1
         else:
-            self.retty_sleep *= 2
+            self.retry_sleep *= 2
 
 
     def backoff_wait(self):
         if self.api_url in self.exp_backoff_endpoint:
-            self.exp_backoff_endpoint[self.api_url] <<= self.exp_backoff
+            self.exp_backoff_endpoint[self.api_url] *= 2
         else:
             self.exp_backoff_endpoint[self.api_url] = 1
 
@@ -470,9 +465,8 @@ class Distiller:
                     self.conn.commit()
 
                     if self.save_to_textfile:
-                        with self.textfile as fp_textfile:
-                          fp_textfile.writelines(text)
-                          fp_textfile.textfile.flush()
+                        self.textfile.writelines(text)
+                        self.textfile.flush()
 
                     lt, lc = len(text), len(data)
                     print(Fore.BLUE + f"[+] Text size: {lt} bytes, Compressed data size ({self.compression_algo}): {lc} bytes, ratio: {round(lt/lc,2)}" + Style.RESET_ALL)
@@ -495,16 +489,18 @@ if __name__ == '__main__':
        backup_file(args.db, "./words/")
 
     hostname = 'localhost'
+    remote_hostname = 'localhost'
     if args.api_url is not None:
         remote_hostname = urlparse(args.api_url).hostname
     if args.api_hf_provider:
-        remote_hostname = 'api.hugginface.co' 
+        remote_hostname = 'api.huggingface.co'
     
 
     if args.threads is not None:
         torch.set_num_threads(args.threads)
         print(Fore.BLUE + f"[-] Torch set to use {args.threads} CPU threads" + Style.RESET_ALL)
 
+    secrets = None
     if args.secrets_file is not None:
         hostname = urlparse(args.api_url).hostname
 

@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "distiller"
+version = "0.1.0"
+description = "Model distiller automator — recursively drives an LLM with seed prompts and stores compressed outputs in SQLite"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [
+    { name = "daedalus" }
+]
+keywords = [
+    "llm", "model-distillation", "ai", "ngrams", "tfidf",
+    "bloom-filter", "sqlite", "openai", "huggingface", "torch"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "colorama",
+    "bitarray",
+    "openai",
+    "huggingface_hub",
+    "torch",
+    "transformers",
+    "scikit-learn",
+    "zstd",
+    "joblib",
+]
+
+[project.optional-dependencies]
+unsloth = [
+    "unsloth",
+]
+dev = [
+    "pytest",
+    "pytest-cov",
+]
+
+[project.scripts]
+distiller = "distiller.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lib*"]
+
+[tool.setuptools.package-dir]
+"distiller" = "."

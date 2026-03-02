@@ -1,7 +1,9 @@
 colorama
 bitarray
 openai
-huggingface
+huggingface_hub
 torch
 transformers
 scikit-learn
+zstd
+joblib

@@ -64,6 +64,12 @@ words/
 *.swp
 *.swo
 
+# Ruff
+.ruff_cache/
+
+# MyPy
+.mypy_cache/
+
 # OS
 .DS_Store
 Thumbs.db

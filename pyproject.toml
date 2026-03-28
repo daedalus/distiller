@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "distiller"
@@ -8,9 +8,9 @@ version = "0.1.0"
 description = "Model distiller automator — recursively drives an LLM with seed prompts and stores compressed outputs in SQLite"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 authors = [
-    { name = "daedalus" }
+    { name = "Dario Clavijo", email = "clavijodario@gmail.com" }
 ]
 keywords = [
     "llm", "model-distillation", "ai", "ngrams", "tfidf",
@@ -21,10 +21,9 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
@@ -40,20 +39,77 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dev = [
+    "ruff",
+    "mypy",
+    "hatch",
+]
+test = [
+    "pytest",
+    "pytest-cov",
+    "pytest-mock",
+    "pytest-asyncio",
+    "hypothesis",
+]
+lint = [
+    "ruff",
+    "mypy",
+]
+all = ["distiller[dev,test,lint]"]
 unsloth = [
     "unsloth",
 ]
-dev = [
-    "pytest",
-    "pytest-cov",
-]
 
 [project.scripts]
-distiller = "distiller.main:main"
+distiller = "distiller.__main__:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["lib*"]
+[project.urls]
+Homepage = "https://github.com/daedalus/distiller"
+Repository = "https://github.com/daedalus/distiller"
+Issues = "https://github.com/daedalus/distiller/issues"
 
-[tool.setuptools.package-dir]
-"distiller" = "."
+[tool.hatch.build.targets.wheel]
+packages = ["src/distiller"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/distiller"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "ANN", "TCH", "N", "C4", "ARG"]
+ignore = ["E501", "ANN001", "ANN201", "ANN202", "ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short --cov=src --cov-fail-under=80"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.coverage.report]
+exclude = ["tests/*", "*/__init__.py"]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

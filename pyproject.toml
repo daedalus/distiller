@@ -36,6 +36,7 @@ dependencies = [
     "scikit-learn",
     "zstd",
     "joblib",
+    "pyyaml",
 ]
 
 [project.optional-dependencies]

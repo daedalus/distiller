@@ -1,0 +1,30 @@
+# Distiller Configuration Example
+# Copy this to config.yaml and customize as needed
+
+model: distilgpt2
+api_url: null
+api_key: null
+
+# Generation settings
+max_tokens: 1024
+max_depth: 10
+compression_level: 0
+
+# Database
+db: words/data.db
+
+# TF-IDF settings
+min_tfidf_score: 0.01
+min_ngrams: 1
+max_ngrams: 6
+
+# Bloom filter
+bloom_filter_size: 27
+bloom_hash_count: 8
+
+# Output
+no_color: false
+verbose: false
+
+# Retry settings
+exp_backoff: false

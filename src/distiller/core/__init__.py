@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING
 
+from .config import Config, create_default_config
 from .tfidf import TFIDFHelper
 from .utils import (
     all_ngrams,
@@ -13,6 +14,8 @@ from .utils import (
 
 __all__ = [
     "TFIDFHelper",
+    "Config",
+    "create_default_config",
     "get_response",
     "get_json_response",
     "compress_content",

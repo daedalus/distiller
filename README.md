@@ -1,4 +1,4 @@
-## The distiller ##
+## The llm-distiller ##
 
 ### Running ###
 

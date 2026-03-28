@@ -1,4 +1,4 @@
-from distiller import cli
+from llm_distiller import cli
 
 
 def main() -> int:

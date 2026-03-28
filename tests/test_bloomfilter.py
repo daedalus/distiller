@@ -1,4 +1,4 @@
-from distiller.adapters.bloomfilter import BloomFilter
+from llm_distiller.adapters.bloomfilter import BloomFilter
 
 
 def test_bloomfilter_initialization() -> None:

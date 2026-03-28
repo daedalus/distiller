@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from distiller.core.utils import backup_file, compress_content, expand_content
+from llm_distiller.core.utils import backup_file, compress_content, expand_content
 
 
 def test_compress_content_gz() -> None:

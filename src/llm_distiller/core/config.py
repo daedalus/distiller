@@ -1,4 +1,4 @@
-"""Configuration management for distiller.
+"""Configuration management for llm_distiller.
 
 This module provides functionality to load and manage configuration from YAML files.
 """

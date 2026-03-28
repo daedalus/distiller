@@ -1,4 +1,4 @@
-# SPEC.md — distiller
+# SPEC.md — llm-distiller
 
 ## Purpose
 Distiller is a CLI tool that extracts key information from LLM (Large Language Model) outputs using TF-IDF (Term Frequency-Inverse Document Frequency) analysis. It processes text prompts and LLM responses to identify the most relevant n-grams based on their TF-IDF scores.
@@ -26,7 +26,7 @@ Distiller is a CLI tool that extracts key information from LLM (Large Language M
 ### CLI Commands
 
 ```bash
-distiller <prompt> [OPTIONS]
+llm-distiller <prompt> [OPTIONS]
 ```
 
 **Options:**

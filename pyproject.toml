@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "distiller"
+name = "llm-distiller"
 version = "0.1.0"
 description = "Model distiller automator — recursively drives an LLM with seed prompts and stores compressed outputs in SQLite"
 readme = "README.md"
@@ -56,24 +56,24 @@ lint = [
     "ruff",
     "mypy",
 ]
-all = ["distiller[dev,test,lint]"]
+all = ["llm-distiller[dev,test,lint]"]
 unsloth = [
     "unsloth",
 ]
 
 [project.scripts]
-distiller = "distiller.__main__:main"
+llm-distiller = "llm_distiller.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/daedalus/distiller"
-Repository = "https://github.com/daedalus/distiller"
-Issues = "https://github.com/daedalus/distiller/issues"
+Homepage = "https://github.com/daedalus/llm-distiller"
+Repository = "https://github.com/daedalus/llm-distiller"
+Issues = "https://github.com/daedalus/llm-distiller/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/distiller"]
+packages = ["src/llm_distiller"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/distiller"]
+include = ["src/llm_distiller"]
 
 [tool.ruff]
 line-length = 88

@@ -1,4 +1,4 @@
-from distiller.core.tfidf import TFIDFHelper
+from llm_distiller.core.tfidf import TFIDFHelper
 
 
 def test_tfidf_initialization(sample_corpus) -> None:
